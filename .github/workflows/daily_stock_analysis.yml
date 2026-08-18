@@ -1,4 +1,4 @@
-name: Daily Stock Analysis
+name: Daily Stock Analysis.
 
 on:
   workflow_dispatch:
