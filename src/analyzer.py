@@ -4,7 +4,7 @@
 A股自选股智能分析系统 - AI分析层
 ===================================
 """
-print(">>> USING PATCHED ANALYZER WITH RATE LIMIT PROTECTION & STUBS <<<")
+print(">>> USING PATCHED ANALYZER WITH ROBUST ERROR HANDLING & STUBS <<<")
 
 import json
 import logging
@@ -151,15 +151,19 @@ class GeminiAnalyzer:
                 trend_prediction=localize_trend_prediction('看多', report_language),
                 operation_advice=localize_operation_advice('买入', report_language),
                 decision_type='buy', analysis_summary=response_text[:200],
-                model_used=model_used
+                model_used=model_used,
+                report_language=report_language
             )
             return populate_decision_action_fields(result)
         except Exception as e:
             logger.error("AI 分析失败: %s", e)
             return AnalysisResult(
-                code=code, name=name, sentiment_score=50, success=False, error_message=str(e)
+                code=code, name=name, sentiment_score=50,
+                trend_prediction=localize_trend_prediction('震荡', report_language),
+                operation_advice=localize_operation_advice('持有', report_language),
+                success=False, error_message=str(e),
+                report_language=report_language
             )
 
 def get_analyzer() -> GeminiAnalyzer:
     return GeminiAnalyzer()
-    
