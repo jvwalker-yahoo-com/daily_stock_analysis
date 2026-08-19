@@ -23,7 +23,7 @@ jobs:
           pip install -r requirements.txt
           pip install reportlab requests
 
-      - name: Run analysis
+      - name: Run analysis (Sequential mode to protect API limits)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
@@ -35,7 +35,30 @@ jobs:
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
           LITELLM_MODEL: "gemini-3.5-flash"
-        run: python main.py
+        run: |
+          # Force pipeline concurrency to 1 to prevent simultaneous 429 rate limits
+          python3 -c "
+          import os
+          from src.core.pipeline import StockAnalysisPipeline
+          from src.config import get_config
+          
+          config = get_config()
+          # Force single worker mode
+          stocks = [s.strip() for s in os.getenv('STOCK_LIST', '').split(',') if s.strip()]
+          print(f'Running sequential analysis for: {stocks}')
+          
+          pipeline = StockAnalysisPipeline(config=config)
+          # Run analysis stock by stock with a strict 20s pause between each
+          import time
+          for stock in stocks:
+              print(f'>>> Processing single stock: {stock}')
+              try:
+                  pipeline.run(stock_list=[stock])
+              except Exception as e:
+                  print(f'Error processing {stock}: {e}')
+              print('Waiting 20s before next stock...')
+              time.sleep(20)
+          "
 
       - name: Summarize via Gemini & Generate Professional PDF
         env:
@@ -50,7 +73,6 @@ jobs:
           import urllib.parse
           import smtplib
           import requests
-          import json
           from datetime import datetime
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
@@ -62,7 +84,7 @@ jobs:
           from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
           from reportlab.lib import colors
 
-          # 1. Read generated Chinese report file
+          # 1. Read generated report file
           raw_content = ""
           for path_pattern in ["output/*.md", "reports/*.md", "output/*.txt", "reports/*.txt"]:
               files = glob.glob(path_pattern)
@@ -81,7 +103,7 @@ jobs:
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
           
           prompt = f"""
-          You are a professional financial analyst. Review the following complete stock analysis report written in Chinese, and produce a clean, structured, and professional English executive summary report (similar to a institutional research brief). Include overall market outlook, individual stock breakdowns with their ratings, scores, key financial figures (like revenue, net income, ROE if available), and clear risk management guidance.
+          You are a professional financial analyst. Review the following complete stock analysis report written in Chinese, and produce a clean, structured, and professional English executive summary report (similar to an institutional research brief). Include overall market outlook, individual stock breakdowns with their ratings, scores, key financial figures (like revenue, net income, ROE if available), and clear risk management guidance.
 
           Chinese Report Content:
           {decoded_content[:8000]}
@@ -119,7 +141,6 @@ jobs:
           story.append(Paragraph(f"English Executive Summary — {datetime.now().strftime('%d %B %Y')}", subtitle_style))
           story.append(Spacer(1, 6))
 
-          # Format Gemini's markdown-like summary into PDF paragraphs safely
           for paragraph in summary_text.split('\n\n'):
               if paragraph.strip():
                   cleaned_p = paragraph.replace('*', '').replace('#', '')
