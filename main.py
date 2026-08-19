@@ -21,6 +21,11 @@ A股自选股智能分析系统 - 主调度程序
 - 效率优先：关注筹码集中度好的股票
 - 买点偏好：缩量回踩 MA5/MA10 支撑
 """
+with open("stock_list.txt") as f:
+    tickers = [line.strip() for line in f if line.strip()]
+
+print("Loaded tickers:", tickers)
+
 from __future__ import annotations
 
 import json
