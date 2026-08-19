@@ -57,7 +57,7 @@ jobs:
               time.sleep(20)
           "
 
-      - name: Generate Complete Content PDF Summary & Email
+      - name: Generate Complete Multi-File Content PDF Summary & Email
         env:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
@@ -79,21 +79,25 @@ jobs:
           from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
           from reportlab.lib import colors
 
-          # 1. Find and read the generated report files
-          report_content = ""
-          report_files = []
-          for path_pattern in ["output/*.md", "reports/*.md", "output/*.txt", "reports/*.txt", "*.md", "*.txt"]:
-              report_files.extend(glob.glob(path_pattern, recursive=True))
+          # 1. Read and aggregate ALL generated markdown/text files in workspace
+          combined_text = ""
+          all_files = []
+          for path_pattern in ["output/**/*.md", "reports/**/*.md", "output/**/*.txt", "reports/**/*.txt", "*.md", "*.txt"]:
+              all_files.extend(glob.glob(path_pattern, recursive=True))
 
-          if report_files:
-              report_files.sort(key=os.path.getmtime, reverse=True)
-              print(f"Reading primary report file: {report_files[0]}")
-              with open(report_files[0], "r", encoding="utf-8") as f:
-                  report_content = f.read()
+          print(f"Found report files to aggregate: {all_files}")
+          for file_path in set(all_files):
+              if "workflow" in file_path or "readme" in file_path.lower():
+                  continue
+              try:
+                  with open(file_path, "r", encoding="utf-8") as f:
+                      combined_text += f"\n\n--- FILE: {file_path} ---\n\n" + f.read()
+              except Exception as e:
+                  print(f"Could not read {file_path}: {e}")
 
-          decoded_content = urllib.parse.unquote(report_content)
+          decoded_content = urllib.parse.unquote(combined_text)
           if not decoded_content.strip():
-              decoded_content = "Portfolio scan completed. Target assets: MARA, SOXL, IREN. Refer to database records for detailed metrics."
+              decoded_content = "Portfolio scan completed for MARA, SOXL, IREN. Check database records for specific values."
 
           # 2. Build Clean, Fully Detailed PDF Layout
           pdf_filename = f"Daily_Stock_Analysis_Summary_{datetime.now().strftime('%Y-%m-%d')}.pdf"
@@ -103,19 +107,16 @@ jobs:
           title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#1a365d'), spaceAfter=2)
           subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor('#718096'), spaceAfter=12)
           heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor('#2d3748'), spaceBefore=8, spaceAfter=4)
-          body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor('#2d3748'), leading=12, spaceAfter=3)
+          body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor('#2d3748'), leading=11, spaceAfter=2)
 
           story = []
           story.append(Paragraph("Daily Stock Analysis Decision Dashboard", title_style))
           story.append(Paragraph(f"Summary {datetime.now().strftime('%d %B %Y')}", subtitle_style))
           story.append(Spacer(1, 4))
 
-          story.append(Paragraph("<b>Overall Portfolio & Market Outlook</b>", heading_style))
-          story.append(Paragraph("The pipeline completed pre-market technical scans and indicator evaluations for your configured asset list (MARA, SOXL, IREN). Below are the full extracted report details:", body_style))
-          story.append(Spacer(1, 6))
-
-          story.append(Paragraph("<b>Complete Asset Analysis Reports</b>", heading_style))
+          story.append(Paragraph("<b>Aggregated Asset Analysis Reports (MARA, SOXL, IREN)</b>", heading_style))
           
+          # Add all aggregated text lines cleanly
           for line in decoded_content.split('\n'):
               clean_line = line.strip()
               if clean_line:
@@ -133,7 +134,7 @@ jobs:
           story.append(Paragraph(f"<i>Source: Automated Stock Analysis Decision Dashboard, generated on {datetime.now().strftime('%d %B %Y')}.</i>", subtitle_style))
 
           doc.build(story)
-          print("Complete detail PDF generated successfully:", pdf_filename)
+          print("Full multi-file detail PDF generated successfully:", pdf_filename)
 
           # 3. Construct and Email with PDF Attachment
           sender = os.getenv("SMTP_USERNAME")
@@ -145,7 +146,7 @@ jobs:
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached your complete Daily Stock Analysis Summary PDF containing all asset details.\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached your complete Daily Stock Analysis Summary PDF containing aggregated details for all assets.\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
           with open(pdf_filename, "rb") as attachment:
@@ -160,7 +161,7 @@ jobs:
                   server.starttls()
                   server.login(sender, password)
                   server.sendmail(sender, receiver, msg.as_string())
-              print("Email with complete PDF summary sent successfully!")
+              print("Email with aggregated PDF summary sent successfully!")
           except Exception as mail_err:
               print(f"ERROR: Failed to send email: {mail_err}")
               raise mail_err
