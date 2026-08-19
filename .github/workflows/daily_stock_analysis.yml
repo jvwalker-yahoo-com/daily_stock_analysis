@@ -29,6 +29,9 @@ jobs:
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
           ANPIRE_API_KEY: ${{ secrets.ANPIRE_API_KEY }}
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
           LITELLM_MODEL: "gemini-3.5-flash"
         run: python main.py
@@ -59,15 +62,15 @@ jobs:
           if not raw_content:
               raw_content = "Analysis completed, but no summary file found."
 
-          # 2. Decode URL encoding artifacts (%0A -> newline, %25 -> %)
+          # 2. Decode URL encoding artifacts
           decoded_content = urllib.parse.unquote(raw_content)
 
-          # 3. Append clean English Translation section
+          # 3. Append English Translation section
           english_addendum = """
 
 ---
 ### English Translation Summary / Notes
-- **Total Analyzed**: 3-11 stocks (Trend Tracking Framework)
+- **Total Analyzed**: Stock Portfolio Framework
 - **Market Status**: US Market · Pre-market
 - **Action Window**: Waiting for intraday confirmation; chasing highs is strictly prohibited during pre-market phase.
 - **Analysis Model**: Gemini-3.5-flash
@@ -85,7 +88,6 @@ jobs:
           msg["From"] = sender
           msg["To"] = receiver
 
-          # Attach as plain text / markdown format
           part = MIMEText(full_body, "plain", "utf-8")
           msg.attach(part)
 
@@ -100,3 +102,4 @@ jobs:
               print(f"Failed to send email: {e}")
               raise e
           EOF
+          
