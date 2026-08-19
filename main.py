@@ -31,13 +31,17 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from dotenv import dotenv_values
-from src.config import setup_env
+from src.config import setup_env, get_config
 
 # ⭐ Load tickers from file
 with open("stock_list.txt") as f:
     tickers = [line.strip() for line in f if line.strip()]
 
 print("Loaded tickers:", tickers)
+
+# ⭐ Inject tickers into config so analysis does NOT fail
+config = get_config()
+config.stock_list = tickers
 
 _INITIAL_PROCESS_ENV = dict(os.environ)
 setup_env()
