@@ -94,7 +94,7 @@ jobs:
           from reportlab.pdfbase import pdfmetrics
           from reportlab.pdfbase.ttfonts import TTFont
 
-          # Register Chinese font (WenQuanYi Micro Hei installed via apt-get)
+          # Register Chinese font
           font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
           if os.path.exists(font_path):
               pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
@@ -150,7 +150,6 @@ jobs:
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
           headers = {"Content-Type": "application/json"}
 
-          # --- FUNCTION TO GENERATE PDF ---
           def generate_pdf(text_content, filename, title_prefix, font_name):
               doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
               styles = getSampleStyleSheet()
@@ -231,7 +230,7 @@ jobs:
           Raw Portfolio Data:
           {db_dump[:22000]}
           """
-          res_en = requests.post(url, json={"contents": [{"parts": [{"text": prompt_en}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=60)
+          res_en = requests.post(url, json={"contents": [{"parts": [{"text": prompt_en}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=120)
           summary_en = res_en.json()["candidates"][0]["content"]["parts"][0]["text"] if res_en.status_code == 200 else "English generation failed."
           pdf_en = "Active_Watchlist_Analysis_EN.pdf"
           generate_pdf(summary_en, pdf_en, "Active Watchlist Summary (English)", 'Helvetica')
@@ -249,7 +248,7 @@ jobs:
           Raw Portfolio Data:
           {db_dump[:22000]}
           """
-          res_cn = requests.post(url, json={"contents": [{"parts": [{"text": prompt_cn}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=60)
+          res_cn = requests.post(url, json={"contents": [{"parts": [{"text": prompt_cn}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=120)
           summary_cn = res_cn.json()["candidates"][0]["content"]["parts"][0]["text"] if res_cn.status_code == 200 else "Chinese generation failed."
           pdf_cn = "Active_Watchlist_Analysis_CN.pdf"
           generate_pdf(summary_cn, pdf_cn, "Active Watchlist Summary (中文版)", cn_font_name)
