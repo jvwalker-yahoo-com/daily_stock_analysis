@@ -24,7 +24,7 @@ jobs:
           pip install reportlab requests yfinance
           sudo apt-get update && sudo apt-get install -y fonts-wqy-microhei
 
-      - name: Run analysis efficiently from stock_list.txt
+      - name: Run analysis dynamically in chunks from stock_list.txt
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
@@ -51,9 +51,8 @@ jobs:
                       if ticker and not ticker.startswith('#'):
                           stocks.append(ticker)
           
-          print(f'Loaded watchlist: {stocks}')
+          print(f'Dynamically loaded stock list: {stocks}')
           
-          # Process in compact chunks with minimal delay
           chunk_size = 5
           stock_chunks = [stocks[i:i + chunk_size] for i in range(0, len(stocks), chunk_size)]
           pipeline = StockAnalysisPipeline(config=config)
@@ -66,7 +65,7 @@ jobs:
                   print(f'Error processing chunk {chunk}: {e}')
               
               if idx < len(stock_chunks) - 1:
-                  time.sleep(5)
+                  time.sleep(10)
           "
 
       - name: Generate Dual-Language (EN & CN) USD PDFs & Email
@@ -120,7 +119,7 @@ jobs:
                   for table_name in cursor.fetchall():
                       t_name = table_name[0]
                       try:
-                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 100;")
+                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 120;")
                           for row in cursor.fetchall():
                               row_str = str(row)
                               if any(ticker in row_str.upper() for ticker in target_tickers):
@@ -142,7 +141,7 @@ jobs:
                   pass
 
           if len(db_dump.strip()) < 50:
-              db_dump = f"Active Watchlist: {', '.join(target_tickers)}. Analysis records compiled."
+              db_dump = f"Active Watchlist: {', '.join(target_tickers)}. Analysis records compiled successfully."
 
           api_key = os.getenv("GEMINI_API_KEY")
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
@@ -226,10 +225,13 @@ jobs:
           4. Provide individual asset breakdowns covering recent financial metrics, technical trend status, and risk advisory for EACH stock.
 
           Raw Portfolio Data:
-          {db_dump[:22000]}
+          {db_dump[:24000]}
           """
-          res_en = requests_lib.post(url, json={"contents": [{"parts": [{"text": prompt_en}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=90)
-          summary_en = res_en.json()["candidates"][0]["content"]["parts"][0]["text"] if res_en.status_code == 200 else "English generation failed."
+          res_en = requests_lib.post(url, json={"contents": [{"parts": [{"text": prompt_en}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6500}}, headers=headers, timeout=120)
+          if res_en.status_code == 200:
+              summary_en = res_en.json()["candidates"][0]["content"]["parts"][0]["text"]
+          else:
+              summary_en = f"English generation failed with status {res_en.status_code}: {res_en.text}"
           pdf_en = "Active_Watchlist_Analysis_EN.pdf"
           generate_pdf(summary_en, pdf_en, "Active Watchlist Summary (English)", 'Helvetica')
 
@@ -244,10 +246,13 @@ jobs:
           4. Provide individual asset breakdowns for EACH stock.
 
           Raw Portfolio Data:
-          {db_dump[:22000]}
+          {db_dump[:24000]}
           """
-          res_cn = requests_lib.post(url, json={"contents": [{"parts": [{"text": prompt_cn}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=90)
-          summary_cn = res_cn.json()["candidates"][0]["content"]["parts"][0]["text"] if res_cn.status_code == 200 else "Chinese generation failed."
+          res_cn = requests_lib.post(url, json={"contents": [{"parts": [{"text": prompt_cn}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6500}}, headers=headers, timeout=120)
+          if res_cn.status_code == 200:
+              summary_cn = res_cn.json()["candidates"][0]["content"]["parts"][0]["text"]
+          else:
+              summary_cn = f"Chinese generation failed with status {res_cn.status_code}: {res_cn.text}"
           pdf_cn = "Active_Watchlist_Analysis_CN.pdf"
           generate_pdf(summary_cn, pdf_cn, "Active Watchlist Summary (中文版)", cn_font_name)
 
