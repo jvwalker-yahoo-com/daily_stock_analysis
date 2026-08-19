@@ -87,13 +87,15 @@ def main():
         daily_market_context_allow_generate=True,
     )
 
-    # ⭐ Correct call — this avoids the Namespace error
-    success = pipeline.run_full_analysis(
-        config=config,
-        args=args,
-        stock_codes=config.stock_list,
-        raise_errors=False,
-    )
+    # ⭐ Correct call — matches your real project
+    try:
+        success = pipeline.run(
+            stock_codes=config.stock_list,
+            args=args
+        )
+    except Exception as exc:
+        logger.error("分析失败: %s", exc)
+        exit(1)
 
     if not success:
         logger.error("分析失败")
