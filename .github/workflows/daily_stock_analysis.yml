@@ -49,4 +49,3 @@ jobs:
           to: ${{ secrets.NOTIFY_EMAIL }}
           from: ${{ secrets.SMTP_USERNAME }}
           body: "Your daily stock analysis has finished running on GitHub Actions."
-
