@@ -2,7 +2,7 @@ name: Daily Stock Analysis
 
 on:
   schedule:
-    - cron: '0 7 * * 1-5'   # Runs at 07:00 UTC, Monday–Friday
+    - cron: '0 7 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -22,13 +22,7 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # ⭐ DEBUG STEP — SHOW STOCK_LIST VALUE
-      - name: Debug STOCK_LIST
-        run: echo "STOCK_LIST = $STOCK_LIST"
-        env:
-          STOCK_LIST: ${{ secrets.STOCK_LIST }}
-
-     - name: Run analysis
+      - name: Run analysis
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
@@ -36,7 +30,7 @@ jobs:
           ANPIRE_API_KEY: ${{ secrets.ANPIRE_API_KEY }}
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
-          LITELLM_MODEL: "gemini/gemini-2.5-flash"   # Update to a supported active model
+          LITELLM_MODEL: "gemini-1.5-pro-latest"
         run: python main.py
 
       - name: Send email notification
