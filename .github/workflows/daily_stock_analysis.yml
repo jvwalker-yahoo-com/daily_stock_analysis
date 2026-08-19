@@ -1,26 +1,32 @@
-name: Daily Stock Analysis.
+name: Daily Stock Analysis
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 7 * * 1-5"   # Runs at 11:00 AM Spain time (Mon–Fri)
+    - cron: '0 7 * * 1-5'   # Runs at 07:00 UTC, Monday–Friday
+  workflow_dispatch:
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+
+      # ⭐ DEBUG STEP — SHOW STOCK_LIST VALUE
+      - name: Debug STOCK_LIST
+        run: echo "STOCK_LIST = $STOCK_LIST"
+        env:
+          STOCK_LIST: ${{ secrets.STOCK_LIST }}
 
       - name: Run analysis
         env:
@@ -30,11 +36,10 @@ jobs:
           ANPIRE_API_KEY: ${{ secrets.ANPIRE_API_KEY }}
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
-        run: |
-          python main.py
+        run: python main.py
 
       - name: Send email notification
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@v4
         with:
           server_address: smtp.gmail.com
           server_port: 587
@@ -44,3 +49,4 @@ jobs:
           to: ${{ secrets.NOTIFY_EMAIL }}
           from: ${{ secrets.SMTP_USERNAME }}
           body: "Your daily stock analysis has finished running on GitHub Actions."
+
