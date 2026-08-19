@@ -36,6 +36,7 @@ jobs:
           ANPIRE_API_KEY: ${{ secrets.ANPIRE_API_KEY }}
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
+          LITELLM_MODEL: "gemini/gemini-1.5-pro"   # ⭐ Add this line to force a stable model
         run: python main.py
 
       - name: Send email notification
