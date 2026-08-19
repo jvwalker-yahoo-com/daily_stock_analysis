@@ -9,7 +9,7 @@ A股自选股智能分析系统 - AI分析层
 2. 结合技术面和消息面生成分析报告
 3. 解析 LLM 响应为结构化 AnalysisResult
 """
-print(">>> USING PATCHED ANALYZER <<<")
+print(">>> USING PATCHED ANALYZER WITH RATE LIMIT PROTECTION <<<")
 
 import json
 import logging
@@ -313,9 +313,7 @@ class GeminiAnalyzer:
         response_validator: Optional[Callable[[str], None]] = None,
         audit_context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
-        # Force a currently active model endpoint name
         clean_model = "gemini-3.5-flash"
-        
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY environment variable not set")
@@ -332,16 +330,30 @@ class GeminiAnalyzer:
             }
         }
         
-        res = requests.post(url, json=payload, headers=headers, timeout=60)
-        res.raise_for_status()
-        data = res.json()
+        # Retry mechanism for 429 Too Many Requests
+        max_retries = 5
+        base_delay = 4  # seconds
         
-        try:
-            content = data["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, IndexError) as exc:
-            raise RuntimeError(f"Unexpected Gemini API response structure: {data}") from exc
+        for attempt in range(max_retries):
+            res = requests.post(url, json=payload, headers=headers, timeout=60)
+            
+            if res.status_code == 429:
+                sleep_time = base_delay * (2 ** attempt)  # 4s, 8s, 16s, 32s...
+                logger.warning(f"Gemini API 429 Too Many Requests. Retrying in {sleep_time}s (Attempt {attempt+1}/{max_retries})...")
+                time.sleep(sleep_time)
+                continue
+                
+            res.raise_for_status()
+            data = res.json()
+            
+            try:
+                content = data["candidates"][0]["content"]["parts"][0]["text"]
+            except (KeyError, IndexError) as exc:
+                raise RuntimeError(f"Unexpected Gemini API response structure: {data}") from exc
 
-        return content, clean_model, {"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200}
+            return content, clean_model, {"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200}
+            
+        raise RuntimeError("Gemini API rate limit exceeded (429) after maximum retries.")
 
     def analyze(
         self, 
@@ -357,6 +369,9 @@ class GeminiAnalyzer:
         system_prompt = self._get_analysis_system_prompt(report_language, stock_code=code)
         
         name = context.get('stock_name') or STOCK_NAME_MAP.get(code, f'股票{code}')
+        
+        # Add a small buffer pause between requests to respect rate limits
+        time.sleep(2)
         
         try:
             prompt = f"Analyze stock {name} ({code}) based on provided context."
