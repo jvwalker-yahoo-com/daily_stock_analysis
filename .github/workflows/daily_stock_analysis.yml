@@ -50,7 +50,6 @@ jobs:
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
 
-          # 1. Read generated report file
           raw_content = ""
           for path_pattern in ["output/*.md", "reports/*.md", "output/*.txt", "reports/*.txt"]:
               files = glob.glob(path_pattern)
@@ -62,23 +61,12 @@ jobs:
           if not raw_content:
               raw_content = "Analysis completed, but no summary file found."
 
-          # 2. Decode URL encoding artifacts
           decoded_content = urllib.parse.unquote(raw_content)
 
-          # 3. Append English Translation section
-          english_addendum = """
-
----
-### English Translation Summary / Notes
-- **Total Analyzed**: Stock Portfolio Framework
-- **Market Status**: US Market · Pre-market
-- **Action Window**: Waiting for intraday confirmation; chasing highs is strictly prohibited during pre-market phase.
-- **Analysis Model**: Gemini-3.5-flash
-"""
+          english_addendum = "\n\n---\n### English Translation Summary / Notes\n- **Total Analyzed**: Stock Portfolio Framework\n- **Market Status**: US Market · Pre-market\n- **Action Window**: Waiting for intraday confirmation; chasing highs is strictly prohibited.\n- **Analysis Model**: Gemini-3.5-flash"
 
           full_body = decoded_content + english_addendum
 
-          # 4. Construct Email
           sender = os.getenv("SMTP_USERNAME")
           receiver = os.getenv("NOTIFY_EMAIL")
           password = os.getenv("SMTP_PASSWORD")
@@ -91,7 +79,6 @@ jobs:
           part = MIMEText(full_body, "plain", "utf-8")
           msg.attach(part)
 
-          # 5. Send via Gmail SMTP (Port 587)
           try:
               with smtplib.SMTP("smtp.gmail.com", 587) as server:
                   server.starttls()
