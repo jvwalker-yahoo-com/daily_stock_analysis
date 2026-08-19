@@ -28,7 +28,7 @@ jobs:
         env:
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
 
-      - name: Run analysis
+     - name: Run analysis
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
@@ -36,7 +36,7 @@ jobs:
           ANPIRE_API_KEY: ${{ secrets.ANPIRE_API_KEY }}
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
-          LITELLM_MODEL: "gemini/gemini-1.5-pro"   # ⭐ Add this line to force a stable model
+          LITELLM_MODEL: "gemini/gemini-2.5-flash"   # Update to a supported active model
         run: python main.py
 
       - name: Send email notification
