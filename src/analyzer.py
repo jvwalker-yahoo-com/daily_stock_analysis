@@ -313,9 +313,8 @@ class GeminiAnalyzer:
         response_validator: Optional[Callable[[str], None]] = None,
         audit_context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
-        config = self._get_runtime_config()
-        model = config.litellm_model or "gemini-1.5-pro"
-        clean_model = model.split("/")[-1] if "/" in model else model
+        # Force a currently active model endpoint name
+        clean_model = "gemini-3.5-flash"
         
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
@@ -342,7 +341,7 @@ class GeminiAnalyzer:
         except (KeyError, IndexError) as exc:
             raise RuntimeError(f"Unexpected Gemini API response structure: {data}") from exc
 
-        return content, model, {"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200}
+        return content, clean_model, {"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200}
 
     def analyze(
         self, 
