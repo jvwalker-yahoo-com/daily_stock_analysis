@@ -9,6 +9,7 @@ A股自选股智能分析系统 - AI分析层
 2. 结合技术面和消息面生成分析报告
 3. 解析 LLM 响应为结构化 AnalysisResult
 """
+print(">>> USING PATCHED ANALYZER <<<")
 
 import json
 import logging
