@@ -45,39 +45,34 @@ jobs:
           fi
           
           if [ -z "$RAW_CONTENT" ]; then
-            RAW_CONTENT="Analysis completed successfully, but no summary file was found in the output folder."
+            RAW_CONTENT="Analysis completed successfully, but no summary file was found."
           fi
           
-          # Clean up URL encoded characters if present (%0A -> newline, %25 -> %, etc.)
-          FORMATTED_CONTENT=$(python3 -c "
-import urllib.parse, sys
-content = '''$RAW_CONTENT'''
-# Try decoding if it contains URL encoding artifacts
-decoded = urllib.parse.unquote(content)
-print(decoded)
-          ")
+          # Clean up URL encoded characters
+          FORMATTED_CONTENT=$(python3 -c "import urllib.parse, sys; print(urllib.parse.unquote('''$RAW_CONTENT'''))")
           
-          # Append English Translation Note / Summary section
-          ENGLISH_ADDENDUM="\n\n---%0A### English Translation Summary / Notes%0A- **Total Analyzed**: 11 stocks | **Buy**: 11 | **Hold**: 0 | **Sell**: 0%0A- **Market Status**: US Market · Pre-market%0A- **Action Window**: Waiting for intraday confirmation; chasing highs is strictly prohibited during pre-market phase.%0A- **Analyzed Symbols**: MARA, SOXL, IREN, MSFT, TQQQ, META, APLD, SPY, QQQ, BULL, URA."
+          # Append English Translation section
+          ENGLISH_ADDENDUM=$'\n\n---\n### English Translation Summary\n- **Total Analyzed**: 11 stocks | **Buy**: 11 | **Hold**: 0 | **Sell**: 0\n- **Market Status**: US Market · Pre-market\n- **Action Window**: Waiting for intraday confirmation; chasing highs is strictly prohibited.\n- **Analyzed Symbols**: MARA, SOXL, IREN, MSFT, TQQQ, META, APLD, SPY, QQQ, BULL, URA.'
           
           FINAL_BODY="${FORMATTED_CONTENT}${ENGLISH_ADDENDUM}"
 
-          # Escape newlines for GitHub Actions output multi-line compatibility
+          # Escape for GH Actions
           FINAL_BODY="${FINAL_BODY//'%'/'%25'}"
           FINAL_BODY="${FINAL_BODY//$'\n'/'%0A'}"
           FINAL_BODY="${FINAL_BODY//$'\r'/'%0D'}"
           
           echo "report_body=$FINAL_BODY" >> $GITHUB_OUTPUT
 
-      - name: Send email notification with results
+      - name: Send email notification
         uses: dawidd6/action-send-mail@v4
         with:
           server_address: smtp.gmail.com
           server_port: 587
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "Daily Stock Analysis Results (Decision Dashboard)"
+          subject: "Daily Stock Analysis Results"
           to: ${{ secrets.NOTIFY_EMAIL }}
+          
           from: ${{ secrets.SMTP_USERNAME }}
           body: "${{ steps.report-reader.outputs.report_body }}"
           ignore_cert: true
