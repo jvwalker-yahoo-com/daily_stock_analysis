@@ -18,7 +18,17 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
 
+# ⭐ LiteLLM + Gemini patch (fixes your crash)
 import litellm
+litellm._turn_on_debug()
+
+try:
+    from litellm.types import Message
+    Message.model_rebuild()
+except Exception:
+    # Safe fallback if types change in future
+    pass
+
 from json_repair import repair_json
 from litellm import Router
 
@@ -106,15 +116,6 @@ from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
 
-
-def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
-    """Pick a deterministic fallback string for the report language (zh/en/ko)."""
-    normalized = normalize_report_language(language)
-    if normalized == "en":
-        return en
-    if normalized == "ko":
-        return ko
-    return zh
 
 
 def _normalize_risk_warning_values(value: Any) -> List[str]:
