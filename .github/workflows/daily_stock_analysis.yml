@@ -18,10 +18,11 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install dependencies & Chinese fonts
         run: |
           pip install -r requirements.txt
           pip install reportlab requests yfinance
+          sudo apt-get update && sudo apt-get install -y fonts-wqy-microhei
 
       - name: Run analysis dynamically in chunks from stock_list.txt
         env:
@@ -90,6 +91,16 @@ jobs:
           from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
           from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
           from reportlab.lib import colors
+          from reportlab.pdfbase import pdfmetrics
+          from reportlab.pdfbase.ttfonts import TTFont
+
+          # Register Chinese font (WenQuanYi Micro Hei installed via apt-get)
+          font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
+          if os.path.exists(font_path):
+              pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
+              cn_font_name = 'ChineseFont'
+          else:
+              cn_font_name = 'Helvetica'
 
           # Read watchlist
           target_tickers = []
@@ -99,8 +110,6 @@ jobs:
                       t = line.strip()
                       if t and not t.startswith('#'):
                           target_tickers.append(t.upper())
-
-          print(f"Target tickers: {target_tickers}")
 
           db_path = "data/stock_analysis.db"
           db_dump = ""
@@ -142,16 +151,16 @@ jobs:
           headers = {"Content-Type": "application/json"}
 
           # --- FUNCTION TO GENERATE PDF ---
-          def generate_pdf(text_content, filename, title_prefix):
+          def generate_pdf(text_content, filename, title_prefix, font_name):
               doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
               styles = getSampleStyleSheet()
               
-              title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor('#1a365d'), spaceAfter=2)
-              subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#718096'), spaceAfter=10)
-              heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor('#2d3748'), spaceBefore=8, spaceAfter=4)
-              body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor('#2d3748'), leading=12, spaceAfter=4)
-              th_style = ParagraphStyle('THStyle', parent=styles['Normal'], fontSize=8, textColor=colors.white, fontName="Helvetica-Bold")
-              td_style = ParagraphStyle('TDStyle', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor('#2d3748'))
+              title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor('#1a365d'), fontName=font_name, spaceAfter=2)
+              subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#718096'), fontName=font_name, spaceAfter=10)
+              heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor('#2d3748'), fontName=font_name, spaceBefore=8, spaceAfter=4)
+              body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor('#2d3748'), fontName=font_name, leading=12, spaceAfter=4)
+              th_style = ParagraphStyle('THStyle', parent=styles['Normal'], fontSize=8, textColor=colors.white, fontName=font_name)
+              td_style = ParagraphStyle('TDStyle', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor('#2d3748'), fontName=font_name)
 
               story = []
               story.append(Paragraph("Daily Stock Analysis Decision Dashboard", title_style))
@@ -225,7 +234,7 @@ jobs:
           res_en = requests.post(url, json={"contents": [{"parts": [{"text": prompt_en}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=60)
           summary_en = res_en.json()["candidates"][0]["content"]["parts"][0]["text"] if res_en.status_code == 200 else "English generation failed."
           pdf_en = "Active_Watchlist_Analysis_EN.pdf"
-          generate_pdf(summary_en, pdf_en, "Active Watchlist Summary (English)")
+          generate_pdf(summary_en, pdf_en, "Active Watchlist Summary (English)", 'Helvetica')
 
           # --- 2. GENERATE CHINESE REPORT ---
           prompt_cn = f"""
@@ -243,7 +252,7 @@ jobs:
           res_cn = requests.post(url, json={"contents": [{"parts": [{"text": prompt_cn}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=60)
           summary_cn = res_cn.json()["candidates"][0]["content"]["parts"][0]["text"] if res_cn.status_code == 200 else "Chinese generation failed."
           pdf_cn = "Active_Watchlist_Analysis_CN.pdf"
-          generate_pdf(summary_cn, pdf_cn, "Active Watchlist Summary (中文版)")
+          generate_pdf(summary_cn, pdf_cn, "Active Watchlist Summary (中文版)", cn_font_name)
 
           # --- 3. EMAIL BOTH PDFS ---
           sender = os.getenv("SMTP_USERNAME")
