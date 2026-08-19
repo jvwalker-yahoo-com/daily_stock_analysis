@@ -23,7 +23,7 @@ jobs:
           pip install -r requirements.txt
           pip install reportlab requests
 
-      - name: Run analysis (Sequential mode to protect API limits)
+      - name: Run analysis (Sequential mode)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
@@ -36,20 +36,17 @@ jobs:
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
           LITELLM_MODEL: "gemini-3.5-flash"
         run: |
-          # Force pipeline concurrency to 1 to prevent simultaneous 429 rate limits
           python3 -c "
           import os
+          import time
           from src.core.pipeline import StockAnalysisPipeline
           from src.config import get_config
           
           config = get_config()
-          # Force single worker mode
           stocks = [s.strip() for s in os.getenv('STOCK_LIST', '').split(',') if s.strip()]
           print(f'Running sequential analysis for: {stocks}')
           
           pipeline = StockAnalysisPipeline(config=config)
-          # Run analysis stock by stock with a strict 20s pause between each
-          import time
           for stock in stocks:
               print(f'>>> Processing single stock: {stock}')
               try:
@@ -84,17 +81,26 @@ jobs:
           from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
           from reportlab.lib import colors
 
+          # Debug directory contents
+          print("Checking available files in workspace:")
+          print("Output folder files:", glob.glob("output/*"))
+          print("Reports folder files:", glob.glob("reports/*"))
+
           # 1. Read generated report file
           raw_content = ""
-          for path_pattern in ["output/*.md", "reports/*.md", "output/*.txt", "reports/*.txt"]:
-              files = glob.glob(path_pattern)
+          for path_pattern in ["output/*.md", "reports/*.md", "output/*.txt", "reports/*.txt", "output/**/*.md", "reports/**/*.md"]:
+              files = glob.glob(path_pattern, recursive=True)
               if files:
-                  with open(files[0], "r", encoding="utf-8") as f:
+                  # Pick the most recently modified file
+                  latest_file = max(files, key=os.path.getmtime)
+                  print(f"Found report file: {latest_file}")
+                  with open(latest_file, "r", encoding="utf-8") as f:
                       raw_content = f.read(12000)
                   break
 
           if not raw_content:
-              raw_content = "No report content found."
+              raw_content = "No report content found in output or reports directories."
+              print("WARNING: No report file found! Using fallback text.")
 
           decoded_content = urllib.parse.unquote(raw_content)
 
@@ -148,12 +154,14 @@ jobs:
                   story.append(Spacer(1, 4))
 
           doc.build(story)
-          print("AI-summarized PDF generated successfully.")
+          print("AI-summarized PDF generated successfully:", pdf_filename)
 
           # 4. Construct and Email with PDF Attachment
           sender = os.getenv("SMTP_USERNAME")
           receiver = os.getenv("NOTIFY_EMAIL")
           password = os.getenv("SMTP_PASSWORD")
+
+          print(f"Attempting to send email from {sender} to {receiver}...")
 
           msg = MIMEMultipart()
           msg["Subject"] = f"Daily Stock Analysis English Summary PDF - {datetime.now().strftime('%Y-%m-%d')}"
@@ -170,9 +178,14 @@ jobs:
           part.add_header("Content-Disposition", f"attachment; filename= {pdf_filename}")
           msg.attach(part)
 
-          with smtplib.SMTP("smtp.gmail.com", 587) as server:
-              server.starttls()
-              server.login(sender, password)
-              server.sendmail(sender, receiver, msg.as_string())
-          print("Email with AI-summarized PDF attachment sent successfully!")
+          try:
+              with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                  server.starttls()
+                  server.login(sender, password)
+                  server.sendmail(sender, receiver, msg.as_string())
+              print("Email with PDF attachment sent successfully!")
+          except Exception as mail_err:
+              print(f"ERROR: Failed to send email: {mail_err}")
+              raise mail_err
           EOF
+          
