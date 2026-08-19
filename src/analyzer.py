@@ -5,7 +5,7 @@ A股自选股智能分析系统 - AI分析层
 ===================================
 
 职责：
-1. 封装 LLM 调用逻辑（通过 LiteLLM 统一调用 Gemini/Anthropic/OpenAI 等）
+1. 封装 LLM 调用逻辑（直接调用 Gemini API 绕过 LiteLLM / Pydantic 冲突）
 2. 结合技术面和消息面生成分析报告
 3. 解析 LLM 响应为结构化 AnalysisResult
 """
@@ -14,37 +14,18 @@ print(">>> USING PATCHED ANALYZER <<<")
 import json
 import logging
 import math
+import os
 import re
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
-
-# ⭐ LiteLLM + Gemini patch
-import litellm
-litellm._turn_on_debug()
-
-try:
-    from litellm.types import Message
-    Message.model_rebuild()
-except Exception:
-    pass
+import requests
 
 from json_repair import repair_json
-from litellm import Router
-
-from src.agent.llm_adapter import (
-    get_thinking_extra_body,
-    resolve_fallback_litellm_wire_models,
-    register_fallback_model_pricing,
-)
-from src.agent.provider_trace import resolved_model_provider_identity
 from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_ZH
 from src.config import (
     Config,
-    extra_litellm_params,
-    get_api_keys_for_model,
     get_config,
-    get_configured_llm_models,
     resolve_news_window_days,
 )
 from src.storage import persist_llm_usage
@@ -304,8 +285,7 @@ class GeminiAnalyzer:
         use_legacy_default_prompt: Optional[bool] = None,
     ):
         self._config_override = config
-        self._litellm_available = False
-        self._init_litellm()
+        self._available = True
 
     def _get_runtime_config(self) -> Config:
         return getattr(self, "_config_override", None) or get_config()
@@ -319,16 +299,8 @@ class GeminiAnalyzer:
         market_guidelines = get_market_guidelines(stock_code, lang)
         return self.LEGACY_DEFAULT_SYSTEM_PROMPT.replace("{market_placeholder}", market_role).replace("{guidelines_placeholder}", market_guidelines)
 
-    def _init_litellm(self) -> None:
-        config = self._get_runtime_config()
-        litellm_model = config.litellm_model
-        if not litellm_model:
-            return
-        self._litellm_available = True
-        logger.info(f"Analyzer LLM: litellm initialized (model={litellm_model})")
-
     def is_available(self) -> bool:
-        return self._litellm_available
+        return bool(os.getenv("GEMINI_API_KEY"))
 
     def _call_litellm(
         self,
@@ -342,21 +314,34 @@ class GeminiAnalyzer:
         audit_context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
         config = self._get_runtime_config()
-        model = config.litellm_model or "gemini/gemini-1.5-pro"
-        keys = get_api_keys_for_model(model, config) if "get_api_keys_for_model" in globals() else []
-        api_key = keys[0] if keys else None
+        model = config.litellm_model or "gemini-1.5-pro"
+        clean_model = model.split("/")[-1] if "/" in model else model
         
-        response = litellm.completion(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt or self.TEXT_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            api_key=api_key,
-            temperature=generation_config.get("temperature", 0.7),
-            max_tokens=generation_config.get("max_output_tokens", 8192),
-        )
-        content = response.choices[0].message.content
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY environment variable not set")
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+        
+        full_prompt = f"{system_prompt or self.TEXT_SYSTEM_PROMPT}\n\n{prompt}"
+        payload = {
+            "contents": [{"parts": [{"text": full_prompt}]}],
+            "generationConfig": {
+                "temperature": generation_config.get("temperature", 0.7),
+                "maxOutputTokens": generation_config.get("max_output_tokens", 8192),
+            }
+        }
+        
+        res = requests.post(url, json=payload, headers=headers, timeout=60)
+        res.raise_for_status()
+        data = res.json()
+        
+        try:
+            content = data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"Unexpected Gemini API response structure: {data}") from exc
+
         return content, model, {"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200}
 
     def analyze(
@@ -375,7 +360,7 @@ class GeminiAnalyzer:
         name = context.get('stock_name') or STOCK_NAME_MAP.get(code, f'股票{code}')
         
         try:
-            prompt = f"Analyze {name} ({code})"
+            prompt = f"Analyze stock {name} ({code}) based on provided context."
             response_text, model_used, llm_usage = self._call_litellm(
                 prompt,
                 {"temperature": 0.7},
@@ -411,5 +396,3 @@ class GeminiAnalyzer:
 
 def get_analyzer() -> GeminiAnalyzer:
     return GeminiAnalyzer()
-    
-    
