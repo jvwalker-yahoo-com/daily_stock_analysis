@@ -86,7 +86,6 @@ jobs:
               report_files.extend(glob.glob(path_pattern, recursive=True))
 
           if report_files:
-              # Get the most recent report file(s)
               report_files.sort(key=os.path.getmtime, reverse=True)
               print(f"Reading primary report file: {report_files[0]}")
               with open(report_files[0], "r", encoding="utf-8") as f:
@@ -117,11 +116,9 @@ jobs:
 
           story.append(Paragraph("<b>Complete Asset Analysis Reports</b>", heading_style))
           
-          # Clean and add full report lines to ensure nothing is missing
           for line in decoded_content.split('\n'):
               clean_line = line.strip()
               if clean_line:
-                  # Format markdown headers or bullet points gracefully
                   if clean_line.startswith('#'):
                       clean_line = f"<b>{clean_line.replace('#', '').strip()}</b>"
                   
@@ -133,7 +130,7 @@ jobs:
           story.append(Paragraph("• <b>Action Window</b>: Wait for intraday confirmation. Chasing pre-market highs is strictly prohibited.", body_style))
           story.append(Paragraph("• <b>Risk Management</b>: Strict stop-losses and position sizing must be enforced across high-volatility assets.", body_style))
           story.append(Spacer(1, 6))
-          story.append(Paragraph(<i>Source: Automated Stock Analysis Decision Dashboard, generated on {datetime.now().strftime('%d %B %Y')}.</i>, subtitle_style))
+          story.append(Paragraph(f"<i>Source: Automated Stock Analysis Decision Dashboard, generated on {datetime.now().strftime('%d %B %Y')}.</i>", subtitle_style))
 
           doc.build(story)
           print("Complete detail PDF generated successfully:", pdf_filename)
@@ -168,3 +165,4 @@ jobs:
               print(f"ERROR: Failed to send email: {mail_err}")
               raise mail_err
           EOF
+          
