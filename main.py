@@ -9,17 +9,6 @@ A股自选股智能分析系统 - 主调度程序
 2. 实现低并发的线程池调度
 3. 全局异常处理，确保单股失败不影响整体
 4. 提供命令行入口
-
-使用方式：
-    python main.py              # 正常运行
-    python main.py --debug      # 调试模式
-    python main.py --dry-run    # 仅获取数据不分析
-
-交易理念（已融入分析）：
-- 严进策略：不追高，乖离率 > 5% 不买入
-- 趋势交易：只做 MA5>MA10>MA20 多头排列
-- 效率优先：关注筹码集中度好的股票
-- 买点偏好：缩量回踩 MA5/MA10 支撑
 """
 
 from __future__ import annotations
@@ -60,6 +49,9 @@ if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").low
     os.environ["http_proxy"] = proxy_url
     os.environ["https_proxy"] = proxy_url
 
+# ============================================================
+# Packaged import probe
+# ============================================================
 _packaged_import_probe = os.getenv("DSA_PACKAGED_IMPORT_PROBE")
 if _packaged_import_probe:
     import importlib
@@ -77,6 +69,9 @@ if _packaged_import_probe:
     print(f"OK: packaged import succeeded for {_packaged_import_probe}")
     sys.exit(0)
 
+# ============================================================
+# Standard imports
+# ============================================================
 import argparse
 import logging
 import sys
@@ -85,7 +80,7 @@ import uuid
 from datetime import date, datetime, timezone, timedelta
 
 from src.webui_frontend import prepare_webui_frontend_assets
-from src.config import get_config, Config
+from src.config import Config
 from src.logging_config import setup_logging
 from src.brokers.futu.portfolio import FutuPortfolioError
 from data_provider.base import canonical_stock_code
@@ -98,9 +93,8 @@ _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
 _LAST_ANALYSIS_FAILURE_REASON: Optional[str] = None
 
 # ============================================================
-# (Everything below here is unchanged from your original file)
+# Environment helpers
 # ============================================================
-
 def _get_active_env_path() -> Path:
     env_file = os.getenv("ENV_FILE")
     if env_file:
@@ -120,8 +114,7 @@ def _warn_if_public_webui_without_auth(host: str) -> None:
         return
     logger.warning(
         "WEBUI_HOST=%s binds the Web UI to a public interface while "
-        "ADMIN_AUTH_ENABLED=false. Keep this service behind a trusted network "
-        "boundary or enable admin authentication before exposing it.",
+        "ADMIN_AUTH_ENABLED=false.",
         host,
     )
 
@@ -138,7 +131,7 @@ def _read_active_env_values() -> Optional[Dict[str, str]]:
     try:
         values = dotenv_values(env_path)
     except Exception as exc:
-        logger.warning("读取配置文件 %s 失败，继续沿用当前环境变量: %s", env_path, exc)
+        logger.warning("读取配置文件 %s 失败: %s", env_path, exc)
         return None
 
     return {
@@ -155,4 +148,136 @@ _RUNTIME_ENV_FILE_KEYS = {
 
 _env_bootstrapped = True
 
-# (… the rest of your file continues unchanged …)
+# ============================================================
+# Bootstrap environment
+# ============================================================
+def _bootstrap_environment() -> None:
+    global _env_bootstrapped
+    if _env_bootstrapped:
+        return
+
+    setup_env()
+
+    if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").lower() == "true":
+        proxy_host = os.getenv("PROXY_HOST", "127.0.0.1")
+        proxy_port = os.getenv("PROXY_PORT", "10809")
+        proxy_url = f"http://{proxy_host}:{proxy_port}"
+        os.environ["http_proxy"] = proxy_url
+        os.environ["https_proxy"] = proxy_url
+
+    _env_bootstrapped = True
+
+# ============================================================
+# Logging setup
+# ============================================================
+def _setup_bootstrap_logging(debug: bool = False) -> None:
+    level = logging.DEBUG if debug else logging.INFO
+    root = logging.getLogger()
+    root.setLevel(level)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    root.addHandler(handler)
+
+def _setup_runtime_logging(log_dir: str, debug: bool = False) -> bool:
+    try:
+        setup_logging(log_prefix="stock_analysis", debug=debug, log_dir=log_dir)
+        return True
+    except OSError as exc:
+        logger.warning("文件日志初始化失败: %s", exc)
+        return False
+
+# ============================================================
+# Pipeline loader
+# ============================================================
+def _get_stock_analysis_pipeline():
+    _bootstrap_environment()
+    from src.core.pipeline import StockAnalysisPipeline
+    return StockAnalysisPipeline
+
+class _LazyPipelineDescriptor:
+    _resolved = None
+    def __get__(self, obj, objtype=None):
+        if self._resolved is None:
+            self._resolved = _get_stock_analysis_pipeline()
+        return self._resolved
+
+class _ModuleExports:
+    StockAnalysisPipeline = _LazyPipelineDescriptor()
+
+_exports = _ModuleExports()
+
+def __getattr__(name: str):
+    if name == "StockAnalysisPipeline":
+        return _exports.StockAnalysisPipeline
+    raise AttributeError(name)
+
+# ============================================================
+# CLI argument parsing
+# ============================================================
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description='A股自选股智能分析系统')
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--stocks', type=str)
+    parser.add_argument('--portfolio', type=str.lower, choices=('futu',))
+    parser.add_argument('--no-notify', action='store_true')
+    parser.add_argument('--check-notify', action='store_true')
+    parser.add_argument('--single-notify', action='store_true')
+    parser.add_argument('--workers', type=int, default=None)
+    parser.add_argument('--schedule', action='store_true')
+    parser.add_argument('--no-run-immediately', action='store_true')
+    parser.add_argument('--market-review', action='store_true')
+    parser.add_argument('--no-market-review', action='store_true')
+    parser.add_argument('--force-run', action='store_true')
+    parser.add_argument('--webui', action='store_true')
+    parser.add_argument('--webui-only', action='store_true')
+    parser.add_argument('--serve', action='store_true')
+    parser.add_argument('--serve-only', action='store_true')
+    parser.add_argument('--port', type=int, default=None)
+    parser.add_argument('--host', type=str, default=None)
+    parser.add_argument('--no-context-snapshot', action='store_true')
+    parser.add_argument('--backtest', action='store_true')
+    parser.add_argument('--backtest-code', type=str, default=None)
+    parser.add_argument('--backtest-days', type=int, default=None)
+    parser.add_argument('--backtest-force', action='store_true')
+    return parser.parse_args()
+
+# ============================================================
+# Main analysis entrypoint
+# ============================================================
+def main():
+    args = parse_arguments()
+    _setup_bootstrap_logging(args.debug)
+
+    from src.core.pipeline import StockAnalysisPipeline
+    pipeline = StockAnalysisPipeline(
+        config=config,
+        max_workers=args.workers,
+        query_id=uuid.uuid4().hex,
+        query_source="cli",
+        save_context_snapshot=not args.no_context_snapshot,
+        daily_market_context_enabled=True,
+        daily_market_context_allow_generate=True,
+    )
+
+    # Run full analysis
+    from src.core.market_review import run_market_review
+    from src.core.pipeline import StockAnalysisPipeline
+
+    try:
+        pipeline.run(args)
+    except Exception as exc:
+        logger.error("分析失败: %s", exc)
+        sys.exit(1)
+
+    logger.info("分析完成")
+    sys.exit(0)
+
+# ============================================================
+# CLI entrypoint
+# ============================================================
+if __name__ == "__main__":
+    main()
