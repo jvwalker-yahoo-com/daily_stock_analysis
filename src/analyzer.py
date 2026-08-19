@@ -546,18 +546,6 @@ def normalize_chip_structure_availability(result: "AnalysisResult", chip_data: A
     _mark_chip_structure_unavailable(result, language)
 
 
-def _capital_flow_bias_with_status(
-    fundamental_context: Optional[Dict[str, Any]],
-) -> tuple[str, str]:
-    if not isinstance(fundamental_context, dict):
-        return "unavailable", "invalid_context"
-    block = fundamental_context.get("capital_flow")
-    if not isinstance(block, dict):
-        return "unavailable", "capital_flow_block_missing"
-    status = str(block.get("status") or "").strip().lower()
-    return "unavailable", status or "not_supported"
-
-
 def get_stock_name_multi_source(
     stock_code: str,
     context: Optional[Dict] = None,
@@ -665,13 +653,7 @@ def populate_decision_action_fields(
 
 
 class GeminiAnalyzer:
-    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
-
-{guidelines_placeholder}
-
-""" + CORE_TRADING_SKILL_POLICY_ZH + """
-
-""" + CANONICAL_DECISION_SCALE_PROMPT_ZH + """
+    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
 ## 输出格式：决策仪表盘 JSON
 
