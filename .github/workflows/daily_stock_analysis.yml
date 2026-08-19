@@ -23,7 +23,7 @@ jobs:
           pip install -r requirements.txt
           pip install reportlab requests yfinance
 
-      - name: Run analysis in chunks from stock_list.txt
+      - name: Run analysis dynamically in chunks from stock_list.txt
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
@@ -42,7 +42,6 @@ jobs:
           from src.config import get_config
           
           config = get_config()
-          
           stocks = []
           if os.path.exists('stock_list.txt'):
               with open('stock_list.txt', 'r', encoding='utf-8') as f:
@@ -51,7 +50,7 @@ jobs:
                       if ticker and not ticker.startswith('#'):
                           stocks.append(ticker)
           
-          print(f'Loaded full stock list: {stocks}')
+          print(f'Dynamically loaded stock list: {stocks}')
           
           chunk_size = 4
           stock_chunks = [stocks[i:i + chunk_size] for i in range(0, len(stocks), chunk_size)]
@@ -65,11 +64,11 @@ jobs:
                   print(f'Error processing chunk {chunk}: {e}')
               
               if idx < len(stock_chunks) - 1:
-                  print('Waiting 20s between chunks to respect API rate limits...')
+                  print('Waiting 20s between chunks...')
                   time.sleep(20)
           "
 
-      - name: Generate Target Watchlist USD PDF & Email
+      - name: Generate Dual-Language (EN & CN) USD PDFs & Email
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -92,7 +91,7 @@ jobs:
           from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
           from reportlab.lib import colors
 
-          # Read target tickers explicitly from stock_list.txt
+          # Read watchlist
           target_tickers = []
           if os.path.exists('stock_list.txt'):
               with open('stock_list.txt', 'r', encoding='utf-8') as f:
@@ -100,6 +99,8 @@ jobs:
                       t = line.strip()
                       if t and not t.startswith('#'):
                           target_tickers.append(t.upper())
+
+          print(f"Target tickers: {target_tickers}")
 
           db_path = "data/stock_analysis.db"
           db_dump = ""
@@ -112,10 +113,9 @@ jobs:
                   for table_name in cursor.fetchall():
                       t_name = table_name[0]
                       try:
-                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 60;")
+                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 100;")
                           for row in cursor.fetchall():
                               row_str = str(row)
-                              # Only pull rows relevant to the user's explicit watchlist
                               if any(ticker in row_str.upper() for ticker in target_tickers):
                                   db_dump += row_str + "\n"
                       except Exception:
@@ -139,67 +139,61 @@ jobs:
 
           api_key = os.getenv("GEMINI_API_KEY")
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
-          
-          prompt = f"""
-          You are a professional financial analyst. Review the provided records and produce an executive summary report in USD currency covering ONLY the stocks from this exact active watchlist: {', '.join(target_tickers)}.
-          
-          Strict Rules:
-          1. Do NOT include any unlisted assets or legacy placeholder assets. Focus exclusively on: {', '.join(target_tickers)}.
-          2. All monetary values and price targets must be explicitly expressed in USD ($).
-          3. Include a summary comparison table with columns: Ticker, Asset Name, Asset Class, Sentiment Score, Rating, and Core Signal.
-          4. Provide individual asset breakdowns covering recent financial metrics, technical trend status, and risk advisory for these exact matched tickers.
-
-          Raw Portfolio Data:
-          {db_dump[:20000]}
-          """
-
-          payload = {
-              "contents": [{"parts": [{"text": prompt}]}],
-              "generationConfig": {"temperature": 0.2, "maxOutputTokens": 3500}
-          }
-          
           headers = {"Content-Type": "application/json"}
-          summary_text = "Portfolio analysis completed for active watchlist."
-          
-          try:
-              res = requests.post(url, json=payload, headers=headers, timeout=60)
-              if res.status_code == 200:
-                  data = res.json()
-                  if "candidates" in data and data["candidates"]:
-                      summary_text = data["candidates"][0]["content"]["parts"][0]["text"]
-          except Exception as ai_err:
-              print(f"AI warning: {ai_err}")
 
-          pdf_filename = f"Active_Watchlist_Analysis_{datetime.now().strftime('%Y-%m-%d')}.pdf"
-          doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-          styles = getSampleStyleSheet()
-          
-          title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor('#1a365d'), spaceAfter=2)
-          subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#718096'), spaceAfter=10)
-          heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor('#2d3748'), spaceBefore=8, spaceAfter=4)
-          body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor('#2d3748'), leading=12, spaceAfter=4)
-          th_style = ParagraphStyle('THStyle', parent=styles['Normal'], fontSize=8, textColor=colors.white, fontName="Helvetica-Bold")
-          td_style = ParagraphStyle('TDStyle', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor('#2d3748'))
-
-          story = []
-          story.append(Paragraph("Daily Stock Analysis Decision Dashboard", title_style))
-          story.append(Paragraph(f"Active Watchlist Summary &mdash; {datetime.now().strftime('%d %B %Y')}", subtitle_style))
-          story.append(Spacer(1, 4))
-
-          table_data = []
-          for line in summary_text.split('\n'):
-              l_clean = line.strip()
-              if not l_clean:
-                  continue
+          # --- FUNCTION TO GENERATE PDF ---
+          def generate_pdf(text_content, filename, title_prefix):
+              doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+              styles = getSampleStyleSheet()
               
-              if "|" in l_clean and "---" not in l_clean:
-                  cols = [Paragraph(c.strip(), th_style if not table_data else td_style) for c in l_clean.split('|') if c.strip()]
-                  if cols:
-                      table_data.append(cols)
-                  continue
-              elif "|" in l_clean and "---" in l_clean:
-                  continue
-              elif table_data and "|" not in l_clean:
+              title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor('#1a365d'), spaceAfter=2)
+              subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#718096'), spaceAfter=10)
+              heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor('#2d3748'), spaceBefore=8, spaceAfter=4)
+              body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor('#2d3748'), leading=12, spaceAfter=4)
+              th_style = ParagraphStyle('THStyle', parent=styles['Normal'], fontSize=8, textColor=colors.white, fontName="Helvetica-Bold")
+              td_style = ParagraphStyle('TDStyle', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor('#2d3748'))
+
+              story = []
+              story.append(Paragraph("Daily Stock Analysis Decision Dashboard", title_style))
+              story.append(Paragraph(f"{title_prefix} &mdash; {datetime.now().strftime('%d %B %Y')}", subtitle_style))
+              story.append(Spacer(1, 4))
+
+              table_data = []
+              for line in text_content.split('\n'):
+                  l_clean = line.strip()
+                  if not l_clean:
+                      continue
+                  
+                  if "|" in l_clean and "---" not in l_clean:
+                      cols = [Paragraph(c.strip(), th_style if not table_data else td_style) for c in l_clean.split('|') if c.strip()]
+                      if cols:
+                          table_data.append(cols)
+                      continue
+                  elif "|" in l_clean and "---" in l_clean:
+                      continue
+                  elif table_data and "|" not in l_clean:
+                      t = Table(table_data, colWidths=[55, 110, 90, 70, 75, 139])
+                      t.setStyle(TableStyle([
+                          ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
+                          ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                          ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                          ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+                          ('TOPPADDING', (0,0), (-1,-1), 4),
+                          ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e0'))
+                      ]))
+                      story.append(t)
+                      story.append(Spacer(1, 6))
+                      table_data = []
+
+                  if l_clean.startswith("## ") or l_clean.startswith("# "):
+                      story.append(Paragraph(f"<b>{l_clean.replace('#', '').strip()}</b>", heading_style))
+                  elif l_clean.startswith("### "):
+                      story.append(Paragraph(f"<b>{l_clean.replace('#', '').strip()}</b>", body_style))
+                  else:
+                      safe_p = l_clean.replace('*', '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                      story.append(Paragraph(safe_p, body_style))
+
+              if table_data:
                   t = Table(table_data, colWidths=[55, 110, 90, 70, 75, 139])
                   t.setStyle(TableStyle([
                       ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
@@ -210,57 +204,71 @@ jobs:
                       ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e0'))
                   ]))
                   story.append(t)
-                  story.append(Spacer(1, 6))
-                  table_data = []
 
-              if l_clean.startswith("## ") or l_clean.startswith("# "):
-                  story.append(Paragraph(f"<b>{l_clean.replace('#', '').strip()}</b>", heading_style))
-              elif l_clean.startswith("### "):
-                  story.append(Paragraph(f"<b>{l_clean.replace('#', '').strip()}</b>", body_style))
-              else:
-                  safe_p = l_clean.replace('*', '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                  story.append(Paragraph(safe_p, body_style))
+              story.append(Spacer(1, 8))
+              story.append(Paragraph(f"<i>Source: Automated Stock Analysis Decision Dashboard, generated on {datetime.now().strftime('%d %B %Y')}.</i>", subtitle_style))
+              doc.build(story)
 
-          if table_data:
-              t = Table(table_data, colWidths=[55, 110, 90, 70, 75, 139])
-              t.setStyle(TableStyle([
-                  ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
-                  ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-                  ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                  ('BOTTOMPADDING', (0,0), (-1,-1), 4),
-                  ('TOPPADDING', (0,0), (-1,-1), 4),
-                  ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e0'))
-              ]))
-              story.append(t)
+          # --- 1. GENERATE ENGLISH REPORT ---
+          prompt_en = f"""
+          You are a professional financial analyst. Review the provided records and produce a comprehensive executive summary report in USD currency covering ALL stocks from this watch list: {', '.join(target_tickers)}.
+          
+          Strict Rules:
+          1. YOU MUST INCLUDE INDIVIDUAL BREAKDOWNS FOR EVERY SINGLE TICKER LISTED ({', '.join(target_tickers)}). Do not skip any ticker.
+          2. All monetary values and price targets must be explicitly expressed in USD ($).
+          3. Include a summary comparison table with columns: Ticker, Asset Name, Asset Class, Sentiment Score, Rating, and Core Signal.
+          4. Provide individual asset breakdowns covering recent financial metrics, technical trend status, and risk advisory for EACH stock.
 
-          story.append(Spacer(1, 8))
-          story.append(Paragraph(f"<i>Source: Automated Stock Analysis Decision Dashboard (Active Watchlist), generated on {datetime.now().strftime('%d %B %Y')}.</i>", subtitle_style))
+          Raw Portfolio Data:
+          {db_dump[:22000]}
+          """
+          res_en = requests.post(url, json={"contents": [{"parts": [{"text": prompt_en}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=60)
+          summary_en = res_en.json()["candidates"][0]["content"]["parts"][0]["text"] if res_en.status_code == 200 else "English generation failed."
+          pdf_en = "Active_Watchlist_Analysis_EN.pdf"
+          generate_pdf(summary_en, pdf_en, "Active Watchlist Summary (English)")
 
-          doc.build(story)
-          print("PDF built successfully.")
+          # --- 2. GENERATE CHINESE REPORT ---
+          prompt_cn = f"""
+          You are a professional financial analyst. Review the provided records and produce a comprehensive executive summary report in Traditional Chinese, but leave all numerical values, financial metrics, share prices, target prices, market caps, and ticker symbols strictly in USD ($ format). Cover ALL stocks from this watch list: {', '.join(target_tickers)}.
+          
+          Strict Rules:
+          1. YOU MUST INCLUDE INDIVIDUAL BREAKDOWNS FOR EVERY SINGLE TICKER LISTED ({', '.join(target_tickers)}). Do not skip any ticker.
+          2. Translate all descriptive text into professional financial Chinese, but keep all monetary values in USD ($).
+          3. Include a summary comparison table with columns: Ticker, Asset Name, Asset Class, Sentiment Score, Rating, and Core Signal (headers in Chinese).
+          4. Provide individual asset breakdowns for EACH stock.
 
+          Raw Portfolio Data:
+          {db_dump[:22000]}
+          """
+          res_cn = requests.post(url, json={"contents": [{"parts": [{"text": prompt_cn}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 6000}}, headers=headers, timeout=60)
+          summary_cn = res_cn.json()["candidates"][0]["content"]["parts"][0]["text"] if res_cn.status_code == 200 else "Chinese generation failed."
+          pdf_cn = "Active_Watchlist_Analysis_CN.pdf"
+          generate_pdf(summary_cn, pdf_cn, "Active Watchlist Summary (中文版)")
+
+          # --- 3. EMAIL BOTH PDFS ---
           sender = os.getenv("SMTP_USERNAME")
           receiver = os.getenv("NOTIFY_EMAIL")
           password = os.getenv("SMTP_PASSWORD")
 
           msg = MIMEMultipart()
-          msg["Subject"] = f"Active Watchlist Stock Analysis Summary - {datetime.now().strftime('%Y-%m-%d')}"
+          msg["Subject"] = f"Daily Stock Analysis Summary (EN & CN) - {datetime.now().strftime('%Y-%m-%d')}"
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached your comprehensive Daily Stock Analysis PDF Summary for your active watchlist.\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached your dual-language (English and Chinese) Daily Stock Analysis PDF Summaries covering all active watchlist assets with USD metrics.\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
-          with open(pdf_filename, "rb") as attachment:
-              part = MIMEBase("application", "octet-stream")
-              part.set_payload(attachment.read())
-          encoders.encode_base64(part)
-          part.add_header("Content-Disposition", f"attachment; filename= {pdf_filename}")
-          msg.attach(part)
+          for pdf_file in [pdf_en, pdf_cn]:
+              with open(pdf_file, "rb") as attachment:
+                  part = MIMEBase("application", "octet-stream")
+                  part.set_payload(attachment.read())
+              encoders.encode_base64(part)
+              part.add_header("Content-Disposition", f"attachment; filename= {pdf_file}")
+              msg.attach(part)
 
           with smtplib.SMTP("smtp.gmail.com", 587) as server:
               server.starttls()
               server.login(sender, password)
               server.sendmail(sender, receiver, msg.as_string())
-          print("Email sent successfully!")
+          print("Dual-language email sent successfully!")
           EOF
