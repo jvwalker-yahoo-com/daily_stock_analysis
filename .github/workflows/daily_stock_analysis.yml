@@ -33,46 +33,70 @@ jobs:
           LITELLM_MODEL: "gemini-3.5-flash"
         run: python main.py
 
-      - name: Read and format generated report content
-        id: report-reader
+      - name: Send Formatted Email via Python
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
         run: |
-          # Read reports from output or reports folder
-          RAW_CONTENT=""
-          if [ -d "output" ]; then
-            RAW_CONTENT=$(cat output/*.md 2>/dev/null || cat output/*.txt 2>/dev/null | head -c 4000)
-          elif [ -d "reports" ]; then
-            RAW_CONTENT=$(cat reports/*.md 2>/dev/null || cat reports/*.txt 2>/dev/null | head -c 4000)
-          fi
-          
-          if [ -z "$RAW_CONTENT" ]; then
-            RAW_CONTENT="Analysis completed successfully, but no summary file was found."
-          fi
-          
-          # Clean up URL encoded characters
-          FORMATTED_CONTENT=$(python3 -c "import urllib.parse, sys; print(urllib.parse.unquote('''$RAW_CONTENT'''))")
-          
-          # Append English Translation section
-          ENGLISH_ADDENDUM=$'\n\n---\n### English Translation Summary\n- **Total Analyzed**: 11 stocks | **Buy**: 11 | **Hold**: 0 | **Sell**: 0\n- **Market Status**: US Market · Pre-market\n- **Action Window**: Waiting for intraday confirmation; chasing highs is strictly prohibited.\n- **Analyzed Symbols**: MARA, SOXL, IREN, MSFT, TQQQ, META, APLD, SPY, QQQ, BULL, URA.'
-          
-          FINAL_BODY="${FORMATTED_CONTENT}${ENGLISH_ADDENDUM}"
+          python3 - << 'EOF'
+          import os
+          import glob
+          import urllib.parse
+          import smtplib
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
 
-          # Escape for GH Actions
-          FINAL_BODY="${FINAL_BODY//'%'/'%25'}"
-          FINAL_BODY="${FINAL_BODY//$'\n'/'%0A'}"
-          FINAL_BODY="${FINAL_BODY//$'\r'/'%0D'}"
-          
-          echo "report_body=$FINAL_BODY" >> $GITHUB_OUTPUT
+          # 1. Read generated report file
+          raw_content = ""
+          for path_pattern in ["output/*.md", "reports/*.md", "output/*.txt", "reports/*.txt"]:
+              files = glob.glob(path_pattern)
+              if files:
+                  with open(files[0], "r", encoding="utf-8") as f:
+                      raw_content = f.read(4000)
+                  break
 
-      - name: Send email notification
-        uses: dawidd6/action-send-mail@v4
-        with:
-          server_address: smtp.gmail.com
-          server_port: 587
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "Daily Stock Analysis Results"
-          to: ${{ secrets.NOTIFY_EMAIL }}
-          
-          from: ${{ secrets.SMTP_USERNAME }}
-          body: "${{ steps.report-reader.outputs.report_body }}"
-          ignore_cert: true
+          if not raw_content:
+              raw_content = "Analysis completed, but no summary file found."
+
+          # 2. Decode URL encoding artifacts (%0A -> newline, %25 -> %)
+          decoded_content = urllib.parse.unquote(raw_content)
+
+          # 3. Append clean English Translation section
+          english_addendum = """
+
+---
+### English Translation Summary / Notes
+- **Total Analyzed**: 3-11 stocks (Trend Tracking Framework)
+- **Market Status**: US Market · Pre-market
+- **Action Window**: Waiting for intraday confirmation; chasing highs is strictly prohibited during pre-market phase.
+- **Analysis Model**: Gemini-3.5-flash
+"""
+
+          full_body = decoded_content + english_addendum
+
+          # 4. Construct Email
+          sender = os.getenv("SMTP_USERNAME")
+          receiver = os.getenv("NOTIFY_EMAIL")
+          password = os.getenv("SMTP_PASSWORD")
+
+          msg = MIMEMultipart("alternative")
+          msg["Subject"] = "Daily Stock Analysis Results (Decision Dashboard)"
+          msg["From"] = sender
+          msg["To"] = receiver
+
+          # Attach as plain text / markdown format
+          part = MIMEText(full_body, "plain", "utf-8")
+          msg.attach(part)
+
+          # 5. Send via Gmail SMTP (Port 587)
+          try:
+              with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                  server.starttls()
+                  server.login(sender, password)
+                  server.sendmail(sender, receiver, msg.as_string())
+              print("Email sent successfully with clean formatting!")
+          except Exception as e:
+              print(f"Failed to send email: {e}")
+              raise e
+          EOF
