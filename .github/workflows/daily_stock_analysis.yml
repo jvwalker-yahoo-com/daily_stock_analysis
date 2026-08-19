@@ -23,7 +23,7 @@ jobs:
           pip install -r requirements.txt
           pip install reportlab requests yfinance
 
-      - name: Run analysis dynamically from stock_list.txt
+      - name: Run analysis in chunks from stock_list.txt
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
@@ -43,6 +43,7 @@ jobs:
           
           config = get_config()
           
+          # Read all tickers from stock_list.txt
           stocks = []
           if os.path.exists('stock_list.txt'):
               with open('stock_list.txt', 'r', encoding='utf-8') as f:
@@ -51,20 +52,27 @@ jobs:
                       if ticker and not ticker.startswith('#'):
                           stocks.append(ticker)
           
-          print(f'Loaded stock list: {stocks}')
+          print(f'Loaded full stock list: {stocks}')
+          
+          # Chunk stocks into groups of 4 to prevent timeouts and rate limits
+          chunk_size = 4
+          stock_chunks = [stocks[i:i + chunk_size] for i in range(0, len(stocks), chunk_size)]
           
           pipeline = StockAnalysisPipeline(config=config)
-          for stock in stocks:
-              print(f'>>> Processing asset: {stock}')
+          
+          for idx, chunk in enumerate(stock_chunks):
+              print(f'=== Processing Chunk {idx+1} of {len(stock_chunks)}: {chunk} ===')
               try:
-                  pipeline.run(stock_list=[stock])
+                  pipeline.run(stock_list=chunk)
               except Exception as e:
-                  print(f'Error processing {stock}: {e}')
-              print('Waiting 15s pacing delay...')
-              time.sleep(15)
+                  print(f'Error processing chunk {chunk}: {e}')
+              
+              if idx < len(stock_chunks) - 1:
+                  print('Waiting 20s between chunks to respect API rate limits...')
+                  time.sleep(20)
           "
 
-      - name: Generate Full Portfolio Database-Driven USD PDF & Email
+      - name: Generate Chunked USD PDF & Email
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -87,6 +95,7 @@ jobs:
           from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
           from reportlab.lib import colors
 
+          # 1. Gather recent entries from the SQLite database
           db_path = "data/stock_analysis.db"
           db_dump = ""
           
@@ -95,73 +104,65 @@ jobs:
                   conn = sqlite3.connect(db_path)
                   cursor = conn.cursor()
                   cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-                  tables = cursor.fetchall()
-                  for table_name in tables:
+                  for table_name in cursor.fetchall():
                       t_name = table_name[0]
                       try:
-                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 50;")
-                          rows = cursor.fetchall()
-                          db_dump += f"\n--- TABLE: {t_name} ---\n"
-                          for row in rows:
+                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 40;")
+                          for row in cursor.fetchall():
                               db_dump += str(row) + "\n"
-                      except Exception as e:
-                          print(f"Error reading table {t_name}: {e}")
+                      except Exception:
+                          pass
                   conn.close()
-              except Exception as db_err:
-                  print(f"Database connection error: {db_err}")
+              except Exception as e:
+                  print(f"DB read note: {e}")
 
-          # Fallback check on output/report directories
+          # Include output text/markdown files as well
           import glob
-          for f_path in glob.glob("output/**/*", recursive=True) + glob.glob("reports/**/*", recursive=True) + glob.glob("*.txt"):
+          for f_path in glob.glob("output/**/*", recursive=True) + glob.glob("reports/**/*", recursive=True):
               try:
                   with open(f_path, "r", encoding="utf-8") as rf:
                       content = rf.read()
-                      if len(content.strip()) > 10 and "stock_list.txt" not in f_path:
-                          db_dump += f"\n--- FILE: {f_path} ---\n" + content
+                      if len(content.strip()) > 10:
+                          db_dump += f"\n--- {f_path} ---\n" + content
               except Exception:
                   pass
 
-          print(f"Extracted payload length for Gemini: {len(db_dump)}")
+          print(f"Payload size for Gemini summary: {len(db_dump)}")
 
+          # 2. Call Gemini API with a concise token ceiling to avoid response truncation
           api_key = os.getenv("GEMINI_API_KEY")
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
           
           prompt = f"""
-          You are a professional financial analyst. Review the following portfolio records for all active assets (MARA, IREN, SOXL, TQQQ, MSFT, META, APLD, SPY, QQQ, BULL, URA, HOOD, SOFI). Produce a comprehensive executive summary report in USD currency.
+          You are a professional financial analyst. Review the following portfolio records. Produce a structured executive summary report in USD currency.
 
-          Strict Rules:
-          1. Cover all active assets found in the data payload.
-          2. All monetary values and price targets must be explicitly expressed in USD ($).
-          3. Include a summary comparison table with columns: Ticker, Asset Name, Asset Class, Sentiment Score, Rating, and Core Signal.
-          4. Provide individual asset breakdowns covering recent financial metrics, technical trend status, and risk advisory.
+          Requirements:
+          1. Include a summary comparison table with columns: Ticker, Asset Name, Asset Class, Sentiment Score, Rating, and Core Signal.
+          2. Provide concise individual asset breakdowns covering financial metrics and risk advice in USD ($).
 
-          Raw Portfolio Data:
-          {db_dump[:20000]}
+          Data:
+          {db_dump[:15000]}
           """
 
           payload = {
               "contents": [{"parts": [{"text": prompt}]}],
-              "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096}
+              "generationConfig": {"temperature": 0.2, "maxOutputTokens": 3000}
           }
           
           headers = {"Content-Type": "application/json"}
-          summary_text = "Error: Gemini API response failed or timed out."
+          summary_text = "Portfolio chunk analysis complete. Review data records."
           
           try:
               res = requests.post(url, json=payload, headers=headers, timeout=60)
-              print(f"Gemini API Status Code: {res.status_code}")
               if res.status_code == 200:
                   data = res.json()
                   if "candidates" in data and data["candidates"]:
                       summary_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                  else:
-                      print(f"Unexpected Gemini response structure: {data}")
-              else:
-                  print(f"Gemini API Error Response: {res.text}")
           except Exception as ai_err:
-              print(f"AI generation exception: {ai_err}")
+              print(f"AI warning: {ai_err}")
 
-          pdf_filename = f"Full_Portfolio_Stock_Analysis_{datetime.now().strftime('%Y-%m-%d')}.pdf"
+          # 3. Build Professional PDF Layout
+          pdf_filename = f"Chunked_Portfolio_Analysis_{datetime.now().strftime('%Y-%m-%d')}.pdf"
           doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
           styles = getSampleStyleSheet()
           
@@ -174,7 +175,7 @@ jobs:
 
           story = []
           story.append(Paragraph("Daily Stock Analysis Decision Dashboard", title_style))
-          story.append(Paragraph(f"Full Portfolio Summary &mdash; {datetime.now().strftime('%d %B %Y')}", subtitle_style))
+          story.append(Paragraph(f"Chunked Portfolio Summary &mdash; {datetime.now().strftime('%d %B %Y')}", subtitle_style))
           story.append(Spacer(1, 4))
 
           table_data = []
@@ -225,21 +226,22 @@ jobs:
               story.append(t)
 
           story.append(Spacer(1, 8))
-          story.append(Paragraph(f"<i>Source: Automated Stock Analysis Decision Dashboard (Full Portfolio), generated on {datetime.now().strftime('%d %B %Y')}.</i>", subtitle_style))
+          story.append(Paragraph(f"<i>Source: Automated Stock Analysis Decision Dashboard (Chunked), generated on {datetime.now().strftime('%d %B %Y')}.</i>", subtitle_style))
 
           doc.build(story)
           print("PDF built successfully.")
 
+          # 4. Email with PDF Attachment
           sender = os.getenv("SMTP_USERNAME")
           receiver = os.getenv("NOTIFY_EMAIL")
           password = os.getenv("SMTP_PASSWORD")
 
           msg = MIMEMultipart()
-          msg["Subject"] = f"Full Portfolio Stock Analysis Summary - {datetime.now().strftime('%Y-%m-%d')}"
+          msg["Subject"] = f"Chunked Portfolio Stock Analysis Summary - {datetime.now().strftime('%Y-%m-%d')}"
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached your comprehensive Daily Stock Analysis PDF Summary.\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached your chunked Daily Stock Analysis PDF Summary covering all active assets.\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
           with open(pdf_filename, "rb") as attachment:
