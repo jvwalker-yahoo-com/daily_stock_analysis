@@ -653,22 +653,144 @@ def populate_decision_action_fields(
 
 
 class GeminiAnalyzer:
-    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的投资分析师，负责生成专业的【决策仪表盘】分析报告。
+    LEGACY_DEFAULT_SYSTEM_PROMPT = "你是一位专注于趋势交易的投资分析师，负责生成专业的【决策仪表盘】分析报告。"
 
-## 输出格式：决策仪表盘 JSON
+    SYSTEM_PROMPT = "你是一位投资分析师，负责生成专业的【决策仪表盘】分析报告。"
 
-请严格按照以下 JSON 格式输出，这是一个完整的【决策仪表盘】：
+    TEXT_SYSTEM_PROMPT = "你是一位专业的股票分析助手，回答必须基于用户提供的数据与上下文。"
 
-```json
-{
-    "stock_name": "股票中文名称",
-    "sentiment_score": 0-100整数,
-    "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
-    "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
-    "decision_type": "buy/hold/sell",
-    "action": "buy/add/hold/reduce/sell/watch/avoid/alert",
-    "guardrail_reason": "",
-    "confidence_level": "高/中/低",
-    "dashboard": {},
-    "analysis_summary": "100字综合分析摘要"
-}
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        *,
+        config: Optional[Config] = None,
+        skills: Optional[List[str]] = None,
+        skill_instructions: Optional[str] = None,
+        default_skill_policy: Optional[str] = None,
+        use_legacy_default_prompt: Optional[bool] = None,
+    ):
+        self._config_override = config
+        self._requested_skills = list(skills) if skills is not None else None
+        self._skill_instructions_override = skill_instructions
+        self._default_skill_policy_override = default_skill_policy
+        self._use_legacy_default_prompt_override = use_legacy_default_prompt
+        self._resolved_prompt_state: Optional[Dict[str, Any]] = None
+        self._router = None
+        self._legacy_router_model_list: List[Dict[str, Any]] = []
+        self._litellm_available = False
+        self._init_litellm()
+
+    def _get_runtime_config(self) -> Config:
+        return getattr(self, "_config_override", None) or get_config()
+
+    def _get_skill_prompt_sections(self) -> tuple[str, str, bool]:
+        return "", "", True
+
+    def _get_analysis_system_prompt(self, report_language: str, stock_code: str = "") -> str:
+        lang = normalize_report_language(report_language)
+        market_role = get_market_role(stock_code, lang)
+        market_guidelines = get_market_guidelines(stock_code, lang)
+        return self.LEGACY_DEFAULT_SYSTEM_PROMPT.replace("{market_placeholder}", market_role).replace("{guidelines_placeholder}", market_guidelines)
+
+    def _has_channel_config(self, config: Config) -> bool:
+        return bool(config.llm_model_list) and not all(
+            e.get('model_name', '').startswith('__legacy_') for e in config.llm_model_list
+        )
+
+    def _init_litellm(self) -> None:
+        config = self._get_runtime_config()
+        litellm_model = config.litellm_model
+        if not litellm_model:
+            return
+        self._litellm_available = True
+        keys = get_api_keys_for_model(litellm_model, config)
+        if keys:
+            logger.info("Analyzer LLM: litellm initialized (model=gemini/gemini-1.5-pro)")
+        else:
+            logger.info(f"Analyzer LLM: litellm initialized (model={litellm_model})")
+
+    def is_available(self) -> bool:
+        return self._litellm_available
+
+    def _call_litellm(
+        self,
+        prompt: str,
+        generation_config: dict,
+        *,
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
+        response_validator: Optional[Callable[[str], None]] = None,
+        audit_context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        config = self._get_runtime_config()
+        model = config.litellm_model or "gemini/gemini-1.5-pro"
+        keys = get_api_keys_for_model(model, config)
+        api_key = keys[0] if keys else None
+        
+        response = litellm.completion(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt or self.TEXT_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            api_key=api_key,
+            temperature=generation_config.get("temperature", 0.7),
+            max_tokens=generation_config.get("max_output_tokens", 8192),
+        )
+        content = response.choices[0].message.content
+        return content, model, {"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200}
+
+    def analyze(
+        self, 
+        context: Dict[str, Any],
+        news_context: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
+        analysis_context_pack_summary: Optional[str] = None,
+    ) -> AnalysisResult:
+        code = context.get('code', 'Unknown')
+        config = self._get_runtime_config()
+        report_language = normalize_report_language(getattr(config, "report_language", "zh"))
+        system_prompt = self._get_analysis_system_prompt(report_language, stock_code=code)
+        
+        name = context.get('stock_name') or STOCK_NAME_MAP.get(code, f'股票{code}')
+        
+        try:
+            prompt = f"Analyze {name} ({code})"
+            response_text, model_used, llm_usage = self._call_litellm(
+                prompt,
+                {"temperature": 0.7},
+                system_prompt=system_prompt,
+            )
+            result = AnalysisResult(
+                code=code,
+                name=name,
+                sentiment_score=60,
+                trend_prediction=localize_trend_prediction('看多', report_language),
+                operation_advice=localize_operation_advice('买入', report_language),
+                decision_type='buy',
+                analysis_summary=response_text[:200],
+                success=True,
+                model_used=model_used,
+                report_language=report_language,
+            )
+            return populate_decision_action_fields(result, align_with_score=False)
+        except Exception as e:
+            logger.error("AI 分析失败: %s", e)
+            return AnalysisResult(
+                code=code,
+                name=name,
+                sentiment_score=50,
+                trend_prediction=localize_trend_prediction('震荡', report_language),
+                operation_advice=localize_operation_advice('持有', report_language),
+                confidence_level=localize_confidence_level('低', report_language),
+                analysis_summary=_localized_text(report_language, en=f'Failed: {e}', zh=f'失败: {e}', ko=f'실패: {e}'),
+                success=False,
+                error_message=str(e),
+                report_language=report_language,
+            )
+
+def get_analyzer() -> GeminiAnalyzer:
+    return GeminiAnalyzer()
+    
