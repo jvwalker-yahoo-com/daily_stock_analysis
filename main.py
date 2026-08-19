@@ -60,8 +60,6 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--no-context-snapshot", action="store_true")
-    parser.add_argument("--no-market-review", action="store_true")
-    parser.add_argument("--force-run", action="store_true")
     return parser.parse_args()
 
 # ============================================================
@@ -89,10 +87,10 @@ def main():
 
     # ⭐ Correct call — matches your real project
     try:
-        success = pipeline.run(
-            stock_codes=config.stock_list,
-            args=args
-        )
+        if args.dry_run:
+            success = pipeline.run(config.stock_list, dry_run=True)
+        else:
+            success = pipeline.run(config.stock_list)
     except Exception as exc:
         logger.error("分析失败: %s", exc)
         exit(1)
