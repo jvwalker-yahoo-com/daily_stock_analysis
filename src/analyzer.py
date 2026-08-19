@@ -2552,10 +2552,10 @@ class GeminiAnalyzer:
                 return
 
         if keys:
-            logger.info(f"Analyzer LLM: litellm initialized (model={gemini/gemini-1.5-pro})")
+            logger.info(f"Analyzer LLM: litellm initialized (model={gemini/gemini-1.5-pro)")
         else:
             logger.info(
-                f"Analyzer LLM: litellm initialized (model={litellm_model}, "
+                f"Analyzer LLM: litellm initialized (model={gemini/gemini-1.5-flash}, "
                 f"API key from environment)"
             )
 
