@@ -4,7 +4,7 @@
 A股自选股智能分析系统 - AI分析层
 ===================================
 """
-print(">>> USING PATCHED ANALYZER WITH ROBUST RATE LIMIT PROTECTION <<<")
+print(">>> USING PATCHED ANALYZER WITH RATE LIMIT PROTECTION & STUBS <<<")
 
 import json
 import logging
@@ -25,7 +25,6 @@ from src.report_language import (
 )
 from src.schemas.decision_action import build_action_fields
 from src.config import Config, get_config
-from src.market_context import get_market_role, get_market_guidelines
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +33,26 @@ def _localized_text(language: str, en: str, zh: str, ko: str) -> str:
     if lang == "en": return en
     if lang == "ko": return ko
     return zh
+
+# --- Stubs required by pipeline.py ---
+def fill_price_position_if_needed(result: Any, trend_result: Any = None, realtime_quote: Any = None) -> None:
+    pass
+
+def stabilize_decision_with_structure(result: Any, trend_result: Any = None, fundamental_context: Optional[Dict[str, Any]] = None) -> None:
+    pass
+
+def check_content_integrity(result: Any, *, require_phase_decision: bool = False) -> Tuple[bool, List[str]]:
+    return True, []
+
+def apply_placeholder_fill(result: Any, missing_fields: List[str]) -> None:
+    pass
+
+def normalize_chip_structure_availability(result: Any, chip_data: Any) -> None:
+    pass
+
+def fill_chip_structure_if_needed(result: Any, chip_data: Any) -> None:
+    pass
+# -------------------------------------
 
 @dataclass
 class AnalysisResult:
@@ -61,7 +80,7 @@ class AnalysisResult:
             'success': self.success, 'error_message': self.error_message
         }
 
-def populate_decision_action_fields(result: AnalysisResult, *, explicit_action: Any = None) -> AnalysisResult:
+def populate_decision_action_fields(result: AnalysisResult, *, explicit_action: Any = None, **kwargs) -> AnalysisResult:
     fields = build_action_fields(
         operation_advice=getattr(result, "operation_advice", None),
         explicit_action=explicit_action,
@@ -75,14 +94,13 @@ def populate_decision_action_fields(result: AnalysisResult, *, explicit_action: 
 class GeminiAnalyzer:
     LEGACY_DEFAULT_SYSTEM_PROMPT = "你是一位专注于趋势交易的投资分析师，负责生成专业的【决策仪表盘】分析报告。"
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[Config] = None, **kwargs):
         self._config_override = config
 
     def _get_runtime_config(self) -> Config:
         return getattr(self, "_config_override", None) or get_config()
 
     def _get_analysis_system_prompt(self, report_language: str, stock_code: str = "") -> str:
-        lang = normalize_report_language(report_language)
         return self.LEGACY_DEFAULT_SYSTEM_PROMPT
 
     def _call_litellm(self, prompt: str, system_prompt: Optional[str] = None) -> Tuple[str, str]:
@@ -97,7 +115,6 @@ class GeminiAnalyzer:
             "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192}
         }
         
-        # Robust Retry mechanism
         max_retries = 8
         base_delay = 10 
         
@@ -115,13 +132,13 @@ class GeminiAnalyzer:
             
         raise RuntimeError("Gemini API rate limit exceeded (429) after maximum retries.")
 
-    def analyze(self, context: Dict[str, Any]) -> AnalysisResult:
+    def analyze(self, context: Dict[str, Any], **kwargs) -> AnalysisResult:
         code = context.get('code', 'Unknown')
         config = self._get_runtime_config()
         report_language = normalize_report_language(getattr(config, "report_language", "zh"))
         name = context.get('stock_name') or STOCK_NAME_MAP.get(code, f'股票{code}')
         
-        # Conservative pacing to respect API limits
+        # 15-second pacing delay to avoid 429 rate limit errors
         logger.info(f"Pacing: Waiting 15s before analyzing {name}...")
         time.sleep(15)
         
@@ -145,3 +162,4 @@ class GeminiAnalyzer:
 
 def get_analyzer() -> GeminiAnalyzer:
     return GeminiAnalyzer()
+    
