@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install reportlab
+          pip install reportlab requests
 
       - name: Run analysis
         env:
@@ -37,8 +37,9 @@ jobs:
           LITELLM_MODEL: "gemini-3.5-flash"
         run: python main.py
 
-      - name: Generate PDF Summary and Send Email
+      - name: Summarize via Gemini & Generate Professional PDF
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
@@ -48,6 +49,8 @@ jobs:
           import glob
           import urllib.parse
           import smtplib
+          import requests
+          import json
           from datetime import datetime
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
@@ -55,73 +58,90 @@ jobs:
           from email import encoders
           
           from reportlab.lib.pagesizes import letter
-          from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+          from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
           from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
           from reportlab.lib import colors
 
-          # 1. Read generated report file
+          # 1. Read generated Chinese report file
           raw_content = ""
           for path_pattern in ["output/*.md", "reports/*.md", "output/*.txt", "reports/*.txt"]:
               files = glob.glob(path_pattern)
               if files:
                   with open(files[0], "r", encoding="utf-8") as f:
-                      raw_content = f.read(6000)
+                      raw_content = f.read(12000)
                   break
 
           if not raw_content:
-              raw_content = "Analysis completed, but no summary file found."
+              raw_content = "No report content found."
 
           decoded_content = urllib.parse.unquote(raw_content)
 
-          # 2. Generate PDF Summary matching your layout format
+          # 2. Use Gemini to translate and generate a professional English summary
+          api_key = os.getenv("GEMINI_API_KEY")
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
+          
+          prompt = f"""
+          You are a professional financial analyst. Review the following complete stock analysis report written in Chinese, and produce a clean, structured, and professional English executive summary report (similar to a institutional research brief). Include overall market outlook, individual stock breakdowns with their ratings, scores, key financial figures (like revenue, net income, ROE if available), and clear risk management guidance.
+
+          Chinese Report Content:
+          {decoded_content[:8000]}
+          """
+
+          payload = {
+              "contents": [{"parts": [{"text": prompt}]}],
+              "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4096}
+          }
+          
+          headers = {"Content-Type": "application/json"}
+          res = requests.post(url, json=payload, headers=headers, timeout=60)
+          
+          summary_text = "Failed to generate AI summary."
+          if res.status_code == 200:
+              try:
+                  data = res.json()
+                  summary_text = data["candidates"][0]["content"]["parts"][0]["text"]
+              except Exception as e:
+                  summary_text = f"Error parsing Gemini response: {e}"
+          else:
+              summary_text = f"API Error: {res.status_code} - {res.text}"
+
+          # 3. Build Professional PDF from Gemini's English Summary
           pdf_filename = f"Daily_Stock_Analysis_Summary_{datetime.now().strftime('%Y-%m-%d')}.pdf"
-          doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+          doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
           styles = getSampleStyleSheet()
           
-          title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#1a365d'), spaceAfter=4)
-          subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor('#718096'), spaceAfter=15)
-          heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=12, textColor=colors.HexColor('#2d3748'), spaceBefore=10, spaceAfter=6)
+          title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#1a365d'), spaceAfter=2)
+          subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor('#718096'), spaceAfter=12)
           body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#2d3748'), leading=14, spaceAfter=6)
 
           story = []
           story.append(Paragraph("Daily Stock Analysis Decision Dashboard", title_style))
-          story.append(Paragraph(f"Summary {datetime.now().strftime('%d %B %Y')}", subtitle_style))
-          story.append(Spacer(1, 5))
+          story.append(Paragraph(f"English Executive Summary — {datetime.now().strftime('%d %B %Y')}", subtitle_style))
+          story.append(Spacer(1, 6))
 
-          story.append(Paragraph("<b>Overall Market Outlook</b>", heading_style))
-          story.append(Paragraph("The automated portfolio pipeline successfully completed its scan across your selected assets. Below is the structured English executive summary derived from the technical and fundamental indicators.", body_style))
-          story.append(Spacer(1, 10))
-
-          story.append(Paragraph("<b>Key Findings & Observations</b>", heading_style))
-          story.append(Paragraph("• <b>Signal Status</b>: Active Buy / Bullish ratings detected across the active ticker set with standard confidence scoring.", body_style))
-          story.append(Paragraph("• <b>Action Guidance</b>: Current pre-market and trend rules advise waiting for intraday confirmation; chasing highs is strictly prohibited.", body_style))
-          story.append(Paragraph("• <b>Risk Management</b>: Strict stop-losses and position sizing are enforced, particularly for high-beta instruments.", body_style))
-          story.append(Spacer(1, 10))
-
-          story.append(Paragraph("<b>Raw Pipeline Extract Snapshot</b>", heading_style))
-          
-          # Clean up text for PDF paragraph inclusion
-          clean_lines = [line.strip() for line in decoded_content.split('\n') if line.strip() and not line.startswith('#')][:15]
-          for line in clean_lines:
-              story.append(Paragraph(f"• {line[:120]}", body_style))
+          # Format Gemini's markdown-like summary into PDF paragraphs safely
+          for paragraph in summary_text.split('\n\n'):
+              if paragraph.strip():
+                  cleaned_p = paragraph.replace('*', '').replace('#', '')
+                  story.append(Paragraph(cleaned_p, body_style))
+                  story.append(Spacer(1, 4))
 
           doc.build(story)
-          print("PDF generated successfully.")
+          print("AI-summarized PDF generated successfully.")
 
-          # 3. Construct and Email with PDF Attachment
+          # 4. Construct and Email with PDF Attachment
           sender = os.getenv("SMTP_USERNAME")
           receiver = os.getenv("NOTIFY_EMAIL")
           password = os.getenv("SMTP_PASSWORD")
 
           msg = MIMEMultipart()
-          msg["Subject"] = f"Daily Stock Analysis Summary PDF - {datetime.now().strftime('%Y-%m-%d')}"
+          msg["Subject"] = f"Daily Stock Analysis English Summary PDF - {datetime.now().strftime('%Y-%m-%d')}"
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached your automated Daily Stock Analysis PDF Summary formatted in professional English layout.\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached your AI-synthesized English summary PDF of today's stock analysis report.\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
-          # Attach PDF
           with open(pdf_filename, "rb") as attachment:
               part = MIMEBase("application", "octet-stream")
               part.set_payload(attachment.read())
@@ -129,10 +149,9 @@ jobs:
           part.add_header("Content-Disposition", f"attachment; filename= {pdf_filename}")
           msg.attach(part)
 
-          # 4. Send via Gmail SMTP
           with smtplib.SMTP("smtp.gmail.com", 587) as server:
               server.starttls()
               server.login(sender, password)
               server.sendmail(sender, receiver, msg.as_string())
-          print("Email with PDF attachment sent successfully!")
+          print("Email with AI-summarized PDF attachment sent successfully!")
           EOF
