@@ -283,3 +283,4 @@ jobs:
               server.sendmail(sender, receiver, msg.as_string())
           print("Dual-language email sent successfully!")
           EOF
+          
