@@ -119,7 +119,7 @@ def main():
     logger = logging.getLogger(__name__)
     logger.info("启动分析系统…")
 
-    # Fetch Danelfin comparative metrics
+    # Fetch Danelfin comparative metrics (called once cleanly)
     logger.info("正在获取 Danelfin AI 多因子评分...")
     danelfin_results = fetch_danelfin_rankings(config.stock_list)
     logger.info("Danelfin 评分获取完成: %s", danelfin_results)
