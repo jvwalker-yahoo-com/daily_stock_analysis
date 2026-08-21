@@ -146,7 +146,7 @@ jobs:
               except Exception:
                   pass
 
-          # 3. Pull Live Market Data for Verification & Context
+          # 3. Pull Live Prices
           print("-> Fetching live market prices...")
           live_metrics = {}
           for t in target_tickers:
@@ -159,61 +159,57 @@ jobs:
               except Exception:
                   live_metrics[t] = {"price": 0.0, "1d": 0.0}
 
-          # 4. Gemini SDK Analysis Generation
-          print("-> Requesting Gemini institutional analysis...")
+          # 4. Unified Dual-Language LLM Generation Pass
+          print("-> Requesting unified English & Chinese institutional analysis...")
           ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-          prompt_en = f"""
-You are a senior equity analyst. Review the records below and generate a comprehensive executive summary report in USD covering ALL 13 stocks: {', '.join(target_tickers)}.
+          unified_prompt = f"""
+You are a senior quantitative equity analyst. You must produce TWO complete institutional investment reports covering ALL 13 designated assets: {', '.join(target_tickers)}.
 
 Current Live Closing Prices:
 {json.dumps(live_metrics, indent=2)}
 
-Strict Structure:
-1. Executive Overview: Macro context, AI infrastructure, and asset allocation strategy.
+Raw Input Data:
+{db_dump[:16000]}
+
+Follow this exact structure separated by `===SPLIT_LANGUAGE===`:
+
+[PART 1: ENGLISH REPORT]
+1. Executive Overview: Macro context, AI & data center infrastructure themes, portfolio allocation strategy.
 2. Watch List Summary Comparison Table: Markdown table with columns | Ticker | Asset Name | Asset Class | Sentiment Score (1-10) | Rating | Core Signal |
-3. Individual Asset Breakdowns: Provide in-depth financial metrics (Share Price in USD, Market Cap, Key Metrics), Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}).
+3. Individual Asset Breakdowns: Provide Share Price ($ USD), Market Cap ($ USD), Key Metrics, Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}).
 4. Portfolio Strategy & Tactical Allocation Recommendations.
 
-Raw Input Records:
-{db_dump[:18000]}
-"""
+===SPLIT_LANGUAGE===
 
-          prompt_cn = f"""
-你是一位資深金融分析師。請審閱以下記錄，並撰寫一份涵蓋全部13檔標的（{', '.join(target_tickers)}）的繁體中文高階投資決策報告。所有價格、目標價、市值與財務數據必須嚴格以 USD ($) 呈現。
-
-即時行情價格:
-{json.dumps(live_metrics, indent=2)}
-
-嚴格結構要求:
-1. 執行摘要 (Executive Overview): 宏觀環境、AI與算力基建趨勢、資產配置方針。
+[PART 2: CHINESE TRADITIONAL REPORT (繁體中文)]
+1. 執行摘要 (Executive Overview): 宏觀環境分析、AI算力基建與核能能源轉型趨勢、資產配置方針。
 2. 綜合對比表 (Summary Comparison Table): Markdown表格，欄位為 | 代號 | 資產名稱 | 資產類別 | 情緒評分 (1-10) | 投資評級 | 核心訊號 |。
-3. 個股/資產深度解析: 為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價(USD)、技術趨勢分析與風險提示。
+3. 個股/資產深度解析: 必須為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價 ($ USD)、市值 ($ USD)、技術趨勢分析與風險提示。所有數值與貨幣嚴格以 USD ($) 呈現。
 4. 投資組合構建與戰略配置建議。
-
-原始數據記錄:
-{db_dump[:18000]}
 """
 
           try:
-              res_en = ai_client.models.generate_content(
+              response = ai_client.models.generate_content(
                   model="gemini-2.5-flash",
-                  contents=prompt_en
+                  contents=unified_prompt,
+                  config={
+                      "temperature": 0.2,
+                      "max_output_tokens": 8192
+                  }
               )
-              summary_en = res_en.text
+              full_text = response.text
+              if "===SPLIT_LANGUAGE===" in full_text:
+                  parts = full_text.split("===SPLIT_LANGUAGE===")
+                  summary_en = parts[0].replace("[PART 1: ENGLISH REPORT]", "").strip()
+                  summary_cn = parts[1].replace("[PART 2: CHINESE TRADITIONAL REPORT (繁體中文)]", "").strip()
+              else:
+                  summary_en = full_text
+                  summary_cn = full_text
           except Exception as e:
-              print(f"Error generating English report: {e}")
-              summary_en = "### Executive Summary Report\nAnalysis generated from market records."
-
-          try:
-              res_cn = ai_client.models.generate_content(
-                  model="gemini-2.5-flash",
-                  contents=prompt_cn
-              )
-              summary_cn = res_cn.text
-          except Exception as e:
-              print(f"Error generating Chinese report: {e}")
-              summary_cn = "### 投資決策報告\n市場分析已完成。"
+              print(f"Error generating reports: {e}")
+              summary_en = "### Executive Analysis\nAnalysis generated from database."
+              summary_cn = "### 投資決策報告\n市場數據分析已完成。"
 
           # 5. Extract Ratings & Update History Baseline
           history_file = "reports_history.json"
@@ -373,7 +369,7 @@ Raw Input Records:
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached your complete dual-language Daily Stock Analysis PDF Summaries, including the 3-day rolling signal verification scorecard.\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached your complete dual-language Daily Stock Analysis PDF Summaries, including the rolling signal verification scorecard.\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
           for pdf_file in [pdf_en, pdf_cn]:
