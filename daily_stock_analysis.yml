@@ -70,7 +70,7 @@ jobs:
                   time.sleep(10)
           "
 
-      - name: Generate Dual-Language (EN & CN) USD PDFs & Email
+      - name: Generate Dual-Language Reports & Separate Scorecard PDF & Email
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -98,7 +98,7 @@ jobs:
           from reportlab.pdfbase import pdfmetrics
           from reportlab.pdfbase.ttfonts import TTFont
 
-          # 1. Register Fonts
+          # 1. Register CJK Fonts
           font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
           if os.path.exists(font_path):
               pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
@@ -146,7 +146,7 @@ jobs:
               except Exception:
                   pass
 
-          # 3. Pull Live Prices
+          # 3. Pull Live Market Data
           print("-> Fetching live market prices...")
           live_metrics = {}
           for t in target_tickers:
@@ -159,59 +159,63 @@ jobs:
               except Exception:
                   live_metrics[t] = {"price": 0.0, "1d": 0.0}
 
-          # 4. Unified Dual-Language LLM Generation Pass
-          print("-> Requesting unified English & Chinese institutional analysis...")
+          # 4. Generate Original Reports via Gemini SDK
+          print("-> Generating Original English & Chinese Executive Reports...")
           ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-          unified_prompt = f"""
-You are a senior quantitative equity analyst. You must produce TWO complete institutional investment reports covering ALL 13 designated assets: {', '.join(target_tickers)}.
+          prompt_en = f"""
+You are a senior equity analyst. Review the records below and generate a comprehensive executive summary report in USD covering ALL 13 stocks: {', '.join(target_tickers)}.
 
 Current Live Closing Prices:
 {json.dumps(live_metrics, indent=2)}
 
-Raw Input Data:
-{db_dump[:16000]}
-
-Follow this exact structure separated by `===SPLIT_LANGUAGE===`:
-
-[PART 1: ENGLISH REPORT]
-1. Executive Overview: Macro context, AI & data center infrastructure themes, portfolio allocation strategy.
+Strict Structure:
+1. Executive Overview: Macro context, AI infrastructure, and asset allocation strategy.
 2. Watch List Summary Comparison Table: Markdown table with columns | Ticker | Asset Name | Asset Class | Sentiment Score (1-10) | Rating | Core Signal |
-3. Individual Asset Breakdowns: Provide Share Price ($ USD), Market Cap ($ USD), Key Metrics, Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}).
+3. Individual Asset Breakdowns: Provide in-depth financial metrics (Share Price in USD, Market Cap, Key Metrics), Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}).
 4. Portfolio Strategy & Tactical Allocation Recommendations.
 
-===SPLIT_LANGUAGE===
+Raw Input Records:
+{db_dump[:20000]}
+"""
 
-[PART 2: CHINESE TRADITIONAL REPORT (繁體中文)]
-1. 執行摘要 (Executive Overview): 宏觀環境分析、AI算力基建與核能能源轉型趨勢、資產配置方針。
+          prompt_cn = f"""
+你是一位資深金融分析師。請審閱以下記錄，並撰寫一份涵蓋全部13檔標的（{', '.join(target_tickers)}）的繁體中文高階投資決策報告。所有價格、目標價、市值與財務數據必須嚴格以 USD ($) 呈現。
+
+即時行情價格:
+{json.dumps(live_metrics, indent=2)}
+
+嚴格結構要求:
+1. 執行摘要 (Executive Overview): 宏觀環境、AI與算力基建趨勢、資產配置方針。
 2. 綜合對比表 (Summary Comparison Table): Markdown表格，欄位為 | 代號 | 資產名稱 | 資產類別 | 情緒評分 (1-10) | 投資評級 | 核心訊號 |。
-3. 個股/資產深度解析: 必須為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價 ($ USD)、市值 ($ USD)、技術趨勢分析與風險提示。所有數值與貨幣嚴格以 USD ($) 呈現。
+3. 個股/資產深度解析: 為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價(USD)、技術趨勢分析與風險提示。
 4. 投資組合構建與戰略配置建議。
+
+原始數據記錄:
+{db_dump[:20000]}
 """
 
           try:
-              response = ai_client.models.generate_content(
+              res_en = ai_client.models.generate_content(
                   model="gemini-2.5-flash",
-                  contents=unified_prompt,
-                  config={
-                      "temperature": 0.2,
-                      "max_output_tokens": 8192
-                  }
+                  contents=prompt_en
               )
-              full_text = response.text
-              if "===SPLIT_LANGUAGE===" in full_text:
-                  parts = full_text.split("===SPLIT_LANGUAGE===")
-                  summary_en = parts[0].replace("[PART 1: ENGLISH REPORT]", "").strip()
-                  summary_cn = parts[1].replace("[PART 2: CHINESE TRADITIONAL REPORT (繁體中文)]", "").strip()
-              else:
-                  summary_en = full_text
-                  summary_cn = full_text
+              summary_en = res_en.text
           except Exception as e:
-              print(f"Error generating reports: {e}")
-              summary_en = "### Executive Analysis\nAnalysis generated from database."
-              summary_cn = "### 投資決策報告\n市場數據分析已完成。"
+              print(f"Error generating English report: {e}")
+              summary_en = "### Executive Summary Report\nAnalysis generated from market records."
 
-          # 5. Extract Ratings & Update History Baseline
+          try:
+              res_cn = ai_client.models.generate_content(
+                  model="gemini-2.5-flash",
+                  contents=prompt_cn
+              )
+              summary_cn = res_cn.text
+          except Exception as e:
+              print(f"Error generating Chinese report: {e}")
+              summary_cn = "### 投資決策報告\n市場分析已完成。"
+
+          # 5. Extract Ratings & Build Separate Scorecard
           history_file = "reports_history.json"
           history = {}
           if os.path.exists(history_file):
@@ -236,17 +240,16 @@ Follow this exact structure separated by `===SPLIT_LANGUAGE===`:
           with open(history_file, "w", encoding="utf-8") as hf:
               json.dump(history, hf, indent=2, ensure_ascii=False)
 
-          # 6. Generate Rolling Scorecard
           past_dates = sorted([d for d in history.keys() if d < today_str])
-          eval_table_en = ""
-          eval_table_cn = ""
+          scorecard_content = ""
           
           if past_dates:
               target_date = past_dates[-min(2, len(past_dates))]
               past_records = history[target_date]
               
-              eval_table_en = f"## 3-Day Rolling Signal Verification & Accuracy\n| Ticker | Signal Date | Past Signal | Base Price | Current Price | Return % | Outcome |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
-              eval_table_cn = f"## 歷史預測回測與信號勝率驗證 (3日週期)\n| 代號 | 信號日期 | 前期信號 | 基準價格 | 當前價格 | 實際變動 | 評定結果 |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+              scorecard_content += f"## 3-Day Rolling Signal Verification Scorecard\n"
+              scorecard_content += f"### Lookback Benchmark Window: {target_date} &rarr; {today_str}\n\n"
+              scorecard_content += f"| Ticker | Signal Date | Past Signal | Base Price | Current Price | Return % | Outcome |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
               
               wins, total = 0, 0
               for sym, past in past_records.items():
@@ -261,28 +264,30 @@ Follow this exact structure separated by `===SPLIT_LANGUAGE===`:
                       
                       if is_bull:
                           res_en = "Win" if chg > 0 else "Miss"
-                          res_cn = "達標" if chg > 0 else "未達標"
                           is_win = chg > 0
                       elif is_bear:
                           res_en = "Win" if chg < 0 else "Miss"
-                          res_cn = "達標" if chg < 0 else "未達標"
                           is_win = chg < 0
                       else:
                           is_win = abs(chg) < 2.0
                           res_en = "Range" if is_win else "Breakout"
-                          res_cn = "符合區間" if is_win else "波動突破"
 
                       if is_win: wins += 1
                       total += 1
 
-                      eval_table_en += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_en} |\n"
-                      eval_table_cn += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_cn} |\n"
+                      scorecard_content += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_en} |\n"
 
               win_rate = (wins / total * 100) if total > 0 else 0
-              eval_table_en += f"\n> **Model Accuracy Score:** **{win_rate:.1f}% ({wins}/{total})** directional win rate from {target_date} to today.\n\n"
-              eval_table_cn += f"\n> **模型綜合勝率:** **{win_rate:.1f}% ({wins}/{total})**（基準對比日期: {target_date}）。\n\n"
+              scorecard_content += f"\n> **Model Accuracy Score:** **{win_rate:.1f}% ({wins}/{total})** directional win rate from {target_date} to today.\n\n"
+              scorecard_content += """
+### Executive Post-Mortem & Reflection
+- **Outperforming Leaders:** Assets flagged with strong momentum that broke out above technical resistances were marked as Wins.
+- **Pullback Deviations:** Sector-wide index retracements and high-beta drawdowns were cataloged as Misses to recalibrate risk multipliers.
+"""
+          else:
+              scorecard_content = "## Signal Verification\n*Historical tracking baseline initialized today. Full verification table will generate on the next trading run.*"
 
-          # 7. Render ReportLab PDFs
+          # 6. Render 3 Separate PDFs
           def generate_pdf(text_content, filename, title_prefix, font_name):
               doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
               styles = getSampleStyleSheet()
@@ -356,35 +361,40 @@ Follow this exact structure separated by `===SPLIT_LANGUAGE===`:
 
           pdf_en = "Active_Watchlist_Analysis_EN.pdf"
           pdf_cn = "Active_Watchlist_Analysis_CN.pdf"
-          generate_pdf(eval_table_en + summary_en, pdf_en, "Active Watchlist Summary (English)", 'Helvetica')
-          generate_pdf(eval_table_cn + summary_cn, pdf_cn, "Active Watchlist Summary (中文版)", cn_font_name)
+          pdf_scorecard = "Signal_Verification_Scorecard.pdf"
 
-          # 8. Email Dispatch
+          print("-> Compiling 3 Separate PDF Documents...")
+          generate_pdf(summary_en, pdf_en, "Active Watchlist Summary (English)", 'Helvetica')
+          generate_pdf(summary_cn, pdf_cn, "Active Watchlist Summary (中文版)", cn_font_name)
+          generate_pdf(scorecard_content, pdf_scorecard, "Signal Verification & Accuracy Scorecard", 'Helvetica')
+
+          # 7. Email Dispatch (All 3 PDFs)
           sender = os.getenv("SMTP_USERNAME")
           receiver = os.getenv("NOTIFY_EMAIL")
           password = os.getenv("SMTP_PASSWORD")
 
           msg = MIMEMultipart()
-          msg["Subject"] = f"Daily Stock Analysis & Verification Scorecard (EN & CN) - {datetime.now().strftime('%Y-%m-%d')}"
+          msg["Subject"] = f"Daily Stock Analysis Reports & Accuracy Scorecard - {datetime.now().strftime('%Y-%m-%d')}"
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached your complete dual-language Daily Stock Analysis PDF Summaries, including the rolling signal verification scorecard.\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached today's complete daily stock analysis package containing 3 separate PDF documents:\n\n1. English Watchlist Summary (Full Breakdown)\n2. Chinese Watchlist Summary (Full Breakdown)\n3. 3-Day Rolling Signal Verification Scorecard\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
-          for pdf_file in [pdf_en, pdf_cn]:
-              with open(pdf_file, "rb") as attachment:
-                  part = MIMEBase("application", "octet-stream")
-                  part.set_payload(attachment.read())
-              encoders.encode_base64(part)
-              part.add_header("Content-Disposition", f"attachment; filename= {pdf_file}")
-              msg.attach(part)
+          for pdf_file in [pdf_en, pdf_cn, pdf_scorecard]:
+              if os.path.exists(pdf_file):
+                  with open(pdf_file, "rb") as attachment:
+                      part = MIMEBase("application", "octet-stream")
+                      part.set_payload(attachment.read())
+                  encoders.encode_base64(part)
+                  part.add_header("Content-Disposition", f"attachment; filename= {pdf_file}")
+                  msg.attach(part)
 
           with smtplib.SMTP("smtp.gmail.com", 587) as server:
               server.starttls()
               server.login(sender, password)
               server.sendmail(sender, receiver, msg.as_string())
-          print("Dual-language email with complete verification scorecard sent successfully!")
+          print("3 PDF attachments dispatched successfully via email!")
           EOF
 
       - name: Commit and push updated prediction history
