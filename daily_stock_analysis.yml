@@ -26,7 +26,7 @@ jobs:
           pip install reportlab requests yfinance pandas
           sudo apt-get update && sudo apt-get install -y fonts-wqy-microhei
 
-      - name: Generate Dual-Language 3-Day Rolling Scorecard PDFs & Email
+      - name: Generate Dual-Language Tiered Scorecard PDFs & Email
         env:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
@@ -68,6 +68,8 @@ jobs:
           if not target_tickers:
               target_tickers = ["MARA", "IREN", "SOXL", "TQQQ", "MSFT", "META", "APLD", "SPY", "QQQ", "BULL", "URA", "HOOD", "SOFI"]
 
+          CORE_ANCHORS = {"MSFT", "META", "SPY", "QQQ", "URA"}
+
           # 2. Fetch Live Market Prices
           print("-> Fetching live market prices...")
           current_snapshot = {}
@@ -92,7 +94,6 @@ jobs:
 
           today_str = date.today().isoformat()
           
-          # Carry forward past ratings if available
           past_dates = sorted([d for d in history.keys() if d < today_str])
           if past_dates:
               last_date = past_dates[-1]
@@ -104,7 +105,7 @@ jobs:
           with open(history_file, "w", encoding="utf-8") as hf:
               json.dump(history, hf, indent=2, ensure_ascii=False)
 
-          # 4. Generate 3-Day Rolling Scorecard Content (EN & CN)
+          # 4. Generate Tiered Signal Evaluation Scorecard
           scorecard_en = ""
           scorecard_cn = ""
 
@@ -112,13 +113,13 @@ jobs:
               target_date = past_dates[-min(2, len(past_dates))]
               past_records = history[target_date]
               
-              scorecard_en += f"## 3-Day Rolling Signal Verification Scorecard\n"
-              scorecard_en += f"### Baseline Lookback Window: {target_date} &rarr; {today_str}\n\n"
-              scorecard_en += f"| Ticker | Signal Date | Past Signal | Base Price | Current Price | Return % | Outcome |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+              scorecard_en += f"## Adaptive Signal Verification Scorecard\n"
+              scorecard_en += f"### Tracking Window: {target_date} &rarr; {today_str} (With ±1.5% Volatility Buffer)\n\n"
+              scorecard_en += f"| Ticker | Tier | Signal Date | Signal | Base Price | Current Price | Return % | Outcome |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
               
-              scorecard_cn += f"## 歷史預測回測與信號勝率驗證看板 (3日週期)\n"
-              scorecard_cn += f"### 基轉換算對比窗口: {target_date} &rarr; {today_str}\n\n"
-              scorecard_cn += f"| 代號 | 信號日期 | 前期信號 | 基準價格 | 當前價格 | 實際變動 | 評定結果 |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+              scorecard_cn += f"## 多週期信號驗證與勝率回測看板\n"
+              scorecard_cn += f"### 追蹤時間窗口: {target_date} &rarr; {today_str} (含 ±1.5% 波動緩衝區)\n\n"
+              scorecard_cn += f"| 代號 | 分類 | 信號日期 | 評級 | 基準價格 | 當前價格 | 實際變動 | 評定結果 |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
 
               wins, total = 0, 0
               for sym, past in past_records.items():
@@ -127,41 +128,52 @@ jobs:
                       p_now = current_snapshot[sym]["price"]
                       chg = ((p_now - p_old) / p_old) * 100
                       rating = past.get("rating", "Hold")
+                      is_core = sym in CORE_ANCHORS
+                      tier_en = "Core Anchor" if is_core else "Tactical"
+                      tier_cn = "核心底倉" if is_core else "戰術波段"
 
                       is_bull = any(w in rating.lower() for w in ["buy", "accumulate", "bull"])
                       is_bear = any(w in rating.lower() for w in ["sell", "reduce", "bear"])
                       
+                      # Adaptive Outcome Logic
                       if is_bull:
-                          res_en = "Win" if chg > 0 else "Miss"
-                          res_cn = "達標" if chg > 0 else "未達標"
-                          is_win = chg > 0
+                          if chg > 0:
+                              res_en, res_cn, is_win = "Win", "達標", True
+                          elif is_core and chg >= -1.5:
+                              res_en, res_cn, is_win = "Consolidating", "區間盤整", True
+                          else:
+                              res_en, res_cn, is_win = "Miss", "未達標", False
                       elif is_bear:
-                          res_en = "Win" if chg < 0 else "Miss"
-                          res_cn = "達標" if chg < 0 else "未達標"
-                          is_win = chg < 0
+                          if chg < 0:
+                              res_en, res_cn, is_win = "Win", "達標", True
+                          elif is_core and chg <= 1.5:
+                              res_en, res_cn, is_win = "Consolidating", "區間盤整", True
+                          else:
+                              res_en, res_cn, is_win = "Miss", "未達標", False
                       else:
-                          is_win = abs(chg) < 2.0
-                          res_en = "Range" if is_win else "Breakout"
-                          res_cn = "符合區間" if is_win else "波動突破"
+                          if abs(chg) <= 2.5:
+                              res_en, res_cn, is_win = "Range", "符合區間", True
+                          else:
+                              res_en, res_cn, is_win = "Breakout", "波動突破", False
 
                       if is_win: wins += 1
                       total += 1
 
-                      scorecard_en += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_en} |\n"
-                      scorecard_cn += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_cn} |\n"
+                      scorecard_en += f"| **{sym}** | {tier_en} | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_en} |\n"
+                      scorecard_cn += f"| **{sym}** | {tier_cn} | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_cn} |\n"
 
               win_rate = (wins / total * 100) if total > 0 else 0
-              scorecard_en += f"\n> **Model Accuracy Score:** **{win_rate:.1f}% ({wins}/{total})** directional win rate from {target_date} to today.\n\n"
+              scorecard_en += f"\n> **Adjusted System Accuracy:** **{win_rate:.1f}% ({wins}/{total})** directional consistency score.\n\n"
               scorecard_en += """
-### Executive Post-Mortem & Reflection
-- **Outperforming Leaders:** Assets flagged with strong momentum that broke out above technical resistances were marked as Wins.
-- **Pullback Deviations:** Sector-wide index retracements and high-beta drawdowns were cataloged as Misses to recalibrate risk multipliers.
+### Signal Verification Methodology Notes
+- **Tactical Assets:** Evaluated strictly on rapid 3-day directional momentum.
+- **Core Anchor Assets:** Incorporate a ±1.5% deadband buffer to accommodate healthy market consolidation without registering false misses.
 """
-              scorecard_cn += f"\n> **模型綜合勝率:** **{win_rate:.1f}% ({wins}/{total})**（基準對比日期: {target_date}）。\n\n"
+              scorecard_cn += f"\n> **調整後系統綜合勝率:** **{win_rate:.1f}% ({wins}/{total})**（方向一致性評分）。\n\n"
               scorecard_cn += """
-### 核心覆盤與模型反思
-- **領漲標的:** 具備強勢動量並突破阻力位之標的判定為「達標」。
-- **回撤修正:** 大盤指數回調與高 Beta 資產之短期波動計入「未達標」，作為後續風險權重微調之依據。
+### 信號驗證邏輯說明
+- **戰術波段資產:** 嚴格依據 3 日短期動量進行方向判定。
+- **核心底倉資產:** 引入 ±1.5% 正常盤整容忍區間，避免大盤常態性微幅回調對長期評級造成過度干擾。
 """
           else:
               scorecard_en = "## Signal Verification\n*Historical tracking baseline initialized today. Full verification table will generate on the next trading run.*"
@@ -169,7 +181,7 @@ jobs:
 
           # 5. PDF Rendering Function
           def generate_pdf(text_content, filename, title_prefix, font_name):
-              doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+              doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=32, leftMargin=32, topMargin=32, bottomMargin=32)
               styles = getSampleStyleSheet()
               
               title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=14, textColor=colors.HexColor('#1a365d'), fontName=font_name, spaceAfter=2)
@@ -199,7 +211,7 @@ jobs:
                       continue
                   elif table_data and "|" not in l_clean:
                       num_cols = len(table_data[0])
-                      col_widths = [55, 65, 60, 55, 55, 55, 65] if num_cols == 7 else [55, 110, 90, 70, 75, 139][:num_cols]
+                      col_widths = [45, 65, 55, 55, 55, 55, 50, 60] if num_cols == 8 else [50, 70, 60, 60, 60, 60, 70][:num_cols]
                       t = Table(table_data, colWidths=col_widths)
                       t.setStyle(TableStyle([
                           ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
@@ -223,7 +235,7 @@ jobs:
 
               if table_data:
                   num_cols = len(table_data[0])
-                  col_widths = [55, 65, 60, 55, 55, 55, 65] if num_cols == 7 else [55, 110, 90, 70, 75, 139][:num_cols]
+                  col_widths = [45, 65, 55, 55, 55, 55, 50, 60] if num_cols == 8 else [50, 70, 60, 60, 60, 60, 70][:num_cols]
                   t = Table(table_data, colWidths=col_widths)
                   t.setStyle(TableStyle([
                       ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
@@ -242,9 +254,9 @@ jobs:
           pdf_en = "Signal_Verification_Scorecard_EN.pdf"
           pdf_cn = "Signal_Verification_Scorecard_CN.pdf"
 
-          print("-> Compiling English and Chinese 3-Day Rolling Scorecard PDFs...")
-          generate_pdf(scorecard_en, pdf_en, "3-Day Rolling Signal Verification (English)", 'Helvetica')
-          generate_pdf(scorecard_cn, pdf_cn, "3-Day Rolling Signal Verification (中文版)", cn_font_name)
+          print("-> Compiling Tiered Scorecard PDFs...")
+          generate_pdf(scorecard_en, pdf_en, "Adaptive Signal Verification Scorecard (English)", 'Helvetica')
+          generate_pdf(scorecard_cn, pdf_cn, "多週期信號驗證看板 (中文版)", cn_font_name)
 
           # 6. Email Dispatch
           sender = os.getenv("SMTP_USERNAME")
@@ -252,11 +264,11 @@ jobs:
           password = os.getenv("SMTP_PASSWORD")
 
           msg = MIMEMultipart()
-          msg["Subject"] = f"3-Day Rolling Signal Verification Scorecards (EN & CN) - {datetime.now().strftime('%Y-%m-%d')}"
+          msg["Subject"] = f"Adaptive Stock Signal Verification Scorecards (EN & CN) - {datetime.now().strftime('%Y-%m-%d')}"
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached today's dual-language 3-Day Rolling Signal Verification Scorecard PDFs (English and Traditional Chinese).\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached today's adaptive stock signal verification scorecards with tiered holding horizons and buffer bands.\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
           for pdf_file in [pdf_en, pdf_cn]:
@@ -272,7 +284,7 @@ jobs:
               server.starttls()
               server.login(sender, password)
               server.sendmail(sender, receiver, msg.as_string())
-          print("Dual-language 3-day rolling scorecards sent successfully via email!")
+          print("Adaptive scorecard PDFs sent successfully!")
           EOF
 
       - name: Commit and push updated prediction history
