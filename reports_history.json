@@ -115,55 +115,55 @@
   },
   "2026-08-21": {
     "MARA": {
-      "price": 11.15,
+      "price": 42.0,
       "rating": "Buy"
     },
     "IREN": {
-      "price": 42.6,
+      "price": 42.0,
       "rating": "Buy"
     },
     "SOXL": {
-      "price": 122.21,
+      "price": 42.0,
       "rating": "Buy"
     },
     "TQQQ": {
-      "price": 70.48,
+      "price": 42.0,
       "rating": "Buy"
     },
     "MSFT": {
-      "price": 481.15,
+      "price": 42.0,
       "rating": "Buy"
     },
     "META": {
-      "price": 545.83,
+      "price": 42.0,
       "rating": "Buy"
     },
     "APLD": {
-      "price": 28.65,
+      "price": 42.0,
       "rating": "Buy"
     },
     "SPY": {
-      "price": 762.6,
+      "price": 42.0,
       "rating": "Buy"
     },
     "QQQ": {
-      "price": 710.93,
+      "price": 42.0,
       "rating": "Buy"
     },
     "BULL": {
-      "price": 8.85,
+      "price": 42.0,
       "rating": "Buy"
     },
     "URA": {
-      "price": 43.84,
+      "price": 42.0,
       "rating": "Buy"
     },
     "HOOD": {
-      "price": 95.1,
+      "price": 42.0,
       "rating": "Buy"
     },
     "SOFI": {
-      "price": 17.92,
+      "price": 42.0,
       "rating": "Buy"
     }
   }
