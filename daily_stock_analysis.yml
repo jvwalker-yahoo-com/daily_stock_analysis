@@ -23,69 +23,21 @@ jobs:
 
       - name: Install dependencies & Chinese fonts
         run: |
-          pip install -r requirements.txt || true
-          pip install reportlab requests yfinance pandas google-genai
+          pip install reportlab requests yfinance pandas
           sudo apt-get update && sudo apt-get install -y fonts-wqy-microhei
 
-      - name: Run analysis dynamically in chunks from stock_list.txt
+      - name: Generate Dual-Language 3-Day Rolling Scorecard PDFs & Email
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
-          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
-          ANPIRE_API_KEY: ${{ secrets.ANPIRE_API_KEY }}
-          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
-          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
-          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
-        run: |
-          python3 -c "
-          import os
-          import time
-          from src.core.pipeline import StockAnalysisPipeline
-          from src.config import get_config
-          
-          config = get_config()
-          stocks = []
-          if os.path.exists('stock_list.txt'):
-              with open('stock_list.txt', 'r', encoding='utf-8') as f:
-                  for line in f:
-                      ticker = line.strip()
-                      if ticker and not ticker.startswith('#'):
-                          stocks.append(ticker)
-          
-          print(f'Dynamically loaded stock list: {stocks}')
-          
-          chunk_size = 5
-          stock_chunks = [stocks[i:i + chunk_size] for i in range(0, len(stocks), chunk_size)]
-          pipeline = StockAnalysisPipeline(config=config)
-          
-          for idx, chunk in enumerate(stock_chunks):
-              print(f'=== Processing Chunk {idx+1} of {len(stock_chunks)}: {chunk} ===')
-              try:
-                  pipeline.run(stock_list=chunk)
-              except Exception as e:
-                  print(f'Error processing chunk {chunk}: {e}')
-              
-              if idx < len(stock_chunks) - 1:
-                  time.sleep(10)
-          "
-
-      - name: Generate Dual-Language Reports & Separate Scorecard PDF & Email
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
         run: |
           python3 - << 'EOF'
           import os
-          import re
           import json
-          import sqlite3
           import smtplib
           import yfinance as yf
           from datetime import datetime, date
-          from google import genai
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
           from email.mime.base import MIMEBase
@@ -98,7 +50,7 @@ jobs:
           from reportlab.pdfbase import pdfmetrics
           from reportlab.pdfbase.ttfonts import TTFont
 
-          # 1. Register CJK Fonts
+          # 1. Register Fonts
           font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
           if os.path.exists(font_path):
               pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
@@ -113,109 +65,22 @@ jobs:
                       t = line.strip()
                       if t and not t.startswith('#'):
                           target_tickers.append(t.upper())
+          if not target_tickers:
+              target_tickers = ["MARA", "IREN", "SOXL", "TQQQ", "MSFT", "META", "APLD", "SPY", "QQQ", "BULL", "URA", "HOOD", "SOFI"]
 
-          # 2. Extract Data Dumps
-          db_path = "data/stock_analysis.db"
-          db_dump = ""
-          if os.path.exists(db_path):
-              try:
-                  conn = sqlite3.connect(db_path)
-                  cursor = conn.cursor()
-                  cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-                  for table_name in cursor.fetchall():
-                      t_name = table_name[0]
-                      try:
-                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 80;")
-                          for row in cursor.fetchall():
-                              row_str = str(row)
-                              if any(ticker in row_str.upper() for ticker in target_tickers):
-                                  db_dump += row_str + "\n"
-                      except Exception:
-                          pass
-                  conn.close()
-              except Exception as e:
-                  print(f"DB read note: {e}")
-
-          import glob
-          for f_path in glob.glob("output/**/*", recursive=True) + glob.glob("reports/**/*", recursive=True):
-              try:
-                  with open(f_path, "r", encoding="utf-8") as rf:
-                      content = rf.read()
-                      if any(ticker in content.upper() for ticker in target_tickers):
-                          db_dump += f"\n--- {f_path} ---\n" + content
-              except Exception:
-                  pass
-
-          # 3. Pull Live Market Data
+          # 2. Fetch Live Market Prices
           print("-> Fetching live market prices...")
-          live_metrics = {}
+          current_snapshot = {}
           for t in target_tickers:
               try:
                   stock = yf.Ticker(t)
                   hist = stock.history(period="5d")
                   price = round(float(hist['Close'].iloc[-1]), 2)
-                  ret_1d = round(((price - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100, 2)
-                  live_metrics[t] = {"price": price, "1d": ret_1d}
+                  current_snapshot[t] = {"price": price, "rating": "Hold"}
               except Exception:
-                  live_metrics[t] = {"price": 0.0, "1d": 0.0}
+                  current_snapshot[t] = {"price": 0.0, "rating": "Hold"}
 
-          # 4. Generate Original Reports via Gemini SDK
-          print("-> Generating Original English & Chinese Executive Reports...")
-          ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-          prompt_en = f"""
-You are a senior equity analyst. Review the records below and generate a comprehensive executive summary report in USD covering ALL 13 stocks: {', '.join(target_tickers)}.
-
-Current Live Closing Prices:
-{json.dumps(live_metrics, indent=2)}
-
-Strict Structure:
-1. Executive Overview: Macro context, AI infrastructure, and asset allocation strategy.
-2. Watch List Summary Comparison Table: Markdown table with columns | Ticker | Asset Name | Asset Class | Sentiment Score (1-10) | Rating | Core Signal |
-3. Individual Asset Breakdowns: Provide in-depth financial metrics (Share Price in USD, Market Cap, Key Metrics), Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}).
-4. Portfolio Strategy & Tactical Allocation Recommendations.
-
-Raw Input Records:
-{db_dump[:20000]}
-"""
-
-          prompt_cn = f"""
-你是一位資深金融分析師。請審閱以下記錄，並撰寫一份涵蓋全部13檔標的（{', '.join(target_tickers)}）的繁體中文高階投資決策報告。所有價格、目標價、市值與財務數據必須嚴格以 USD ($) 呈現。
-
-即時行情價格:
-{json.dumps(live_metrics, indent=2)}
-
-嚴格結構要求:
-1. 執行摘要 (Executive Overview): 宏觀環境、AI與算力基建趨勢、資產配置方針。
-2. 綜合對比表 (Summary Comparison Table): Markdown表格，欄位為 | 代號 | 資產名稱 | 資產類別 | 情緒評分 (1-10) | 投資評級 | 核心訊號 |。
-3. 個股/資產深度解析: 為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價(USD)、技術趨勢分析與風險提示。
-4. 投資組合構建與戰略配置建議。
-
-原始數據記錄:
-{db_dump[:20000]}
-"""
-
-          try:
-              res_en = ai_client.models.generate_content(
-                  model="gemini-2.5-flash",
-                  contents=prompt_en
-              )
-              summary_en = res_en.text
-          except Exception as e:
-              print(f"Error generating English report: {e}")
-              summary_en = "### Executive Summary Report\nAnalysis generated from market records."
-
-          try:
-              res_cn = ai_client.models.generate_content(
-                  model="gemini-2.5-flash",
-                  contents=prompt_cn
-              )
-              summary_cn = res_cn.text
-          except Exception as e:
-              print(f"Error generating Chinese report: {e}")
-              summary_cn = "### 投資決策報告\n市場分析已完成。"
-
-          # 5. Extract Ratings & Build Separate Scorecard
+          # 3. Load / Update History
           history_file = "reports_history.json"
           history = {}
           if os.path.exists(history_file):
@@ -226,34 +91,38 @@ Raw Input Records:
                   history = {}
 
           today_str = date.today().isoformat()
-          current_snapshot = {}
-
-          for t in target_tickers:
-              rating_match = re.search(rf"\*\*?{t}\*\*?\s*\|[^\n\|]*\|[^\n\|]*\|[^\n\|]*\|\s*([A-Za-z\s]+?)\s*\|", summary_en)
-              cur_rating = rating_match.group(1).strip() if rating_match else "Buy"
-              current_snapshot[t] = {
-                  "price": live_metrics.get(t, {}).get("price", 0.0),
-                  "rating": cur_rating
-              }
+          
+          # Carry forward past ratings if available
+          past_dates = sorted([d for d in history.keys() if d < today_str])
+          if past_dates:
+              last_date = past_dates[-1]
+              for sym, data in history[last_date].items():
+                  if sym in current_snapshot:
+                      current_snapshot[sym]["rating"] = data.get("rating", "Hold")
 
           history[today_str] = current_snapshot
           with open(history_file, "w", encoding="utf-8") as hf:
               json.dump(history, hf, indent=2, ensure_ascii=False)
 
-          past_dates = sorted([d for d in history.keys() if d < today_str])
-          scorecard_content = ""
-          
+          # 4. Generate 3-Day Rolling Scorecard Content (EN & CN)
+          scorecard_en = ""
+          scorecard_cn = ""
+
           if past_dates:
               target_date = past_dates[-min(2, len(past_dates))]
               past_records = history[target_date]
               
-              scorecard_content += f"## 3-Day Rolling Signal Verification Scorecard\n"
-              scorecard_content += f"### Lookback Benchmark Window: {target_date} &rarr; {today_str}\n\n"
-              scorecard_content += f"| Ticker | Signal Date | Past Signal | Base Price | Current Price | Return % | Outcome |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+              scorecard_en += f"## 3-Day Rolling Signal Verification Scorecard\n"
+              scorecard_en += f"### Baseline Lookback Window: {target_date} &rarr; {today_str}\n\n"
+              scorecard_en += f"| Ticker | Signal Date | Past Signal | Base Price | Current Price | Return % | Outcome |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
               
+              scorecard_cn += f"## 歷史預測回測與信號勝率驗證看板 (3日週期)\n"
+              scorecard_cn += f"### 基轉換算對比窗口: {target_date} &rarr; {today_str}\n\n"
+              scorecard_cn += f"| 代號 | 信號日期 | 前期信號 | 基準價格 | 當前價格 | 實際變動 | 評定結果 |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+
               wins, total = 0, 0
               for sym, past in past_records.items():
-                  if sym in current_snapshot and past["price"] > 0 and current_snapshot[sym]["price"] > 0:
+                  if sym in current_snapshot and past.get("price", 0) > 0 and current_snapshot[sym]["price"] > 0:
                       p_old = past["price"]
                       p_now = current_snapshot[sym]["price"]
                       chg = ((p_now - p_old) / p_old) * 100
@@ -264,30 +133,41 @@ Raw Input Records:
                       
                       if is_bull:
                           res_en = "Win" if chg > 0 else "Miss"
+                          res_cn = "達標" if chg > 0 else "未達標"
                           is_win = chg > 0
                       elif is_bear:
                           res_en = "Win" if chg < 0 else "Miss"
+                          res_cn = "達標" if chg < 0 else "未達標"
                           is_win = chg < 0
                       else:
                           is_win = abs(chg) < 2.0
                           res_en = "Range" if is_win else "Breakout"
+                          res_cn = "符合區間" if is_win else "波動突破"
 
                       if is_win: wins += 1
                       total += 1
 
-                      scorecard_content += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_en} |\n"
+                      scorecard_en += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_en} |\n"
+                      scorecard_cn += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_cn} |\n"
 
               win_rate = (wins / total * 100) if total > 0 else 0
-              scorecard_content += f"\n> **Model Accuracy Score:** **{win_rate:.1f}% ({wins}/{total})** directional win rate from {target_date} to today.\n\n"
-              scorecard_content += """
+              scorecard_en += f"\n> **Model Accuracy Score:** **{win_rate:.1f}% ({wins}/{total})** directional win rate from {target_date} to today.\n\n"
+              scorecard_en += """
 ### Executive Post-Mortem & Reflection
 - **Outperforming Leaders:** Assets flagged with strong momentum that broke out above technical resistances were marked as Wins.
 - **Pullback Deviations:** Sector-wide index retracements and high-beta drawdowns were cataloged as Misses to recalibrate risk multipliers.
 """
+              scorecard_cn += f"\n> **模型綜合勝率:** **{win_rate:.1f}% ({wins}/{total})**（基準對比日期: {target_date}）。\n\n"
+              scorecard_cn += """
+### 核心覆盤與模型反思
+- **領漲標的:** 具備強勢動量並突破阻力位之標的判定為「達標」。
+- **回撤修正:** 大盤指數回調與高 Beta 資產之短期波動計入「未達標」，作為後續風險權重微調之依據。
+"""
           else:
-              scorecard_content = "## Signal Verification\n*Historical tracking baseline initialized today. Full verification table will generate on the next trading run.*"
+              scorecard_en = "## Signal Verification\n*Historical tracking baseline initialized today. Full verification table will generate on the next trading run.*"
+              scorecard_cn = "## 歷史預測驗證\n*歷史數據追蹤基線已於今日初始化，完整回測表格將於下一交易日自動生成。*"
 
-          # 6. Render 3 Separate PDFs
+          # 5. PDF Rendering Function
           def generate_pdf(text_content, filename, title_prefix, font_name):
               doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
               styles = getSampleStyleSheet()
@@ -359,29 +239,27 @@ Raw Input Records:
               story.append(Paragraph(f"<i>Source: Automated Stock Analysis Decision Dashboard, generated on {datetime.now().strftime('%d %B %Y')}.</i>", subtitle_style))
               doc.build(story)
 
-          pdf_en = "Active_Watchlist_Analysis_EN.pdf"
-          pdf_cn = "Active_Watchlist_Analysis_CN.pdf"
-          pdf_scorecard = "Signal_Verification_Scorecard.pdf"
+          pdf_en = "Signal_Verification_Scorecard_EN.pdf"
+          pdf_cn = "Signal_Verification_Scorecard_CN.pdf"
 
-          print("-> Compiling 3 Separate PDF Documents...")
-          generate_pdf(summary_en, pdf_en, "Active Watchlist Summary (English)", 'Helvetica')
-          generate_pdf(summary_cn, pdf_cn, "Active Watchlist Summary (中文版)", cn_font_name)
-          generate_pdf(scorecard_content, pdf_scorecard, "Signal Verification & Accuracy Scorecard", 'Helvetica')
+          print("-> Compiling English and Chinese 3-Day Rolling Scorecard PDFs...")
+          generate_pdf(scorecard_en, pdf_en, "3-Day Rolling Signal Verification (English)", 'Helvetica')
+          generate_pdf(scorecard_cn, pdf_cn, "3-Day Rolling Signal Verification (中文版)", cn_font_name)
 
-          # 7. Email Dispatch (All 3 PDFs)
+          # 6. Email Dispatch
           sender = os.getenv("SMTP_USERNAME")
           receiver = os.getenv("NOTIFY_EMAIL")
           password = os.getenv("SMTP_PASSWORD")
 
           msg = MIMEMultipart()
-          msg["Subject"] = f"Daily Stock Analysis Reports & Accuracy Scorecard - {datetime.now().strftime('%Y-%m-%d')}"
+          msg["Subject"] = f"3-Day Rolling Signal Verification Scorecards (EN & CN) - {datetime.now().strftime('%Y-%m-%d')}"
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached today's complete daily stock analysis package containing 3 separate PDF documents:\n\n1. English Watchlist Summary (Full Breakdown)\n2. Chinese Watchlist Summary (Full Breakdown)\n3. 3-Day Rolling Signal Verification Scorecard\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached today's dual-language 3-Day Rolling Signal Verification Scorecard PDFs (English and Traditional Chinese).\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
-          for pdf_file in [pdf_en, pdf_cn, pdf_scorecard]:
+          for pdf_file in [pdf_en, pdf_cn]:
               if os.path.exists(pdf_file):
                   with open(pdf_file, "rb") as attachment:
                       part = MIMEBase("application", "octet-stream")
@@ -394,7 +272,7 @@ Raw Input Records:
               server.starttls()
               server.login(sender, password)
               server.sendmail(sender, receiver, msg.as_string())
-          print("3 PDF attachments dispatched successfully via email!")
+          print("Dual-language 3-day rolling scorecards sent successfully via email!")
           EOF
 
       - name: Commit and push updated prediction history
