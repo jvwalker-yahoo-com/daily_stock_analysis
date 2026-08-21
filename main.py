@@ -1,161 +1,232 @@
-# -*- coding: utf-8 -*-
-"""
-A股自选股智能分析系统 - 主调度程序
-"""
-
-from __future__ import annotations
-
 import os
-import uuid
-import logging
-import requests
-from pathlib import Path
-from typing import List, Dict, Any
+import yfinance as yf
+import pandas as pd
+import markdown2
+from weasyprint import HTML
+from openai import OpenAI
+from signal_verifier import log_and_evaluate_accuracy
 
-from dotenv import dotenv_values
-from src.config import setup_env, get_config
-from src.core.pipeline import StockAnalysisPipeline
-from src.logging_config import setup_logging
+# ==========================================
+# 1. Configuration & Watchlist Setup
+# ==========================================
+WATCHLIST = [
+    "MARA", "IREN", "SOXL", "TQQQ", "MSFT", 
+    "META", "APLD", "SPY", "QQQ", "BULL", 
+    "URA", "HOOD", "SOFI"
+]
 
-# ============================================================
-# Load tickers from file
-# ============================================================
-with open("stock_list.txt") as f:
-    tickers: List[str] = [line.strip() for line in f if line.strip()]
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.environ.get("OPENAI_MODEL", "gpt-4o")
 
-print("Loaded tickers:", tickers)
+# ==========================================
+# 2. PDF Styling (Supports English & CJK)
+# ==========================================
+PDF_CSS = """
+@page {
+    size: A4;
+    margin: 16mm 12mm;
+    background-color: #ffffff;
+}
+body {
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
+    color: #1e293b;
+    font-size: 9.5pt;
+    line-height: 1.5;
+}
+h1 { color: #0f172a; font-size: 16pt; margin-bottom: 6px; border-bottom: 2px solid #0284c7; padding-bottom: 4px; }
+h2 { color: #0284c7; font-size: 12pt; margin-top: 14px; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 3px; }
+h3 { color: #334155; font-size: 10.5pt; margin-top: 10px; margin-bottom: 4px; }
+table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 8.5pt; }
+th { background-color: #0f172a; color: #ffffff; padding: 6px 8px; text-align: left; font-weight: 600; }
+td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; }
+tr:nth-child(even) { background-color: #f8fafc; }
+blockquote { border-left: 3px solid #0284c7; padding-left: 10px; margin: 8px 0; color: #475569; background-color: #f0f9ff; padding-top: 4px; padding-bottom: 4px; }
+ul { padding-left: 16px; margin: 6px 0; }
+li { margin-bottom: 3px; }
+"""
 
-# ============================================================
-# Inject tickers into config
-# ============================================================
-config = get_config()
-config.stock_list = tickers
-
-# Prevent .env reload from wiping your tickers
-config.refresh_stock_list = lambda: None
-
-# ============================================================
-# Environment setup
-# ============================================================
-_INITIAL_PROCESS_ENV = dict(os.environ)
-setup_env()
-
-# ============================================================
-# Danelfin API Integration
-# ============================================================
-def fetch_danelfin_rankings(tickers: List[str]) -> List[Dict[str, Any]]:
-    api_key = os.getenv("DANELFIN_API_KEY")
-    if not api_key:
-        print("Warning: DANELFIN_API_KEY not found in environment variables.")
-        return []
-
-    url = "https://apirest.danelfin.com/ranking"
-    headers = {"x-api-key": api_key}
-    
-    rankings = []
-    for ticker in tickers:
-        clean_ticker = ticker.strip().upper()
-        try:
-            response = requests.get(url, headers=headers, params={"ticker": clean_ticker}, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                scores = {}
-                if data:
-                    first_key = list(data.keys())[0]
-                    if isinstance(data[first_key], dict) and "aiscore" in data[first_key]:
-                        scores = data[first_key]
-                    elif "aiscore" in data:
-                        scores = data
-                
-                rankings.append({
-                    "ticker": clean_ticker,
-                    "ai_score": scores.get("aiscore", "N/A"),
-                    "fundamental": scores.get("fundamental", "N/A"),
-                    "technical": scores.get("technical", "N/A"),
-                    "sentiment": scores.get("sentiment", "N/A"),
-                    "low_risk": scores.get("low_risk", "N/A")
-                })
-            else:
-                print(f"Failed to fetch Danelfin data for {clean_ticker}: Status {response.status_code}")
-        except Exception as e:
-            print(f"Error connecting to Danelfin API for {clean_ticker}: {e}")
-
-    # Sort watchlist head-to-head descending by AI Score
-    rankings.sort(key=lambda x: x["ai_score"] if isinstance(x["ai_score"], (int, float)) else -1, reverse=True)
-    return rankings
-
-# ============================================================
-# Proxy configuration
-# ============================================================
-if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").lower() == "true":
-    proxy_host = os.getenv("PROXY_HOST", "127.0.0.1")
-    proxy_port = os.getenv("PROXY_PORT", "10809")
-    proxy_url = f"http://{proxy_host}:{proxy_port}"
-    os.environ["http_proxy"] = proxy_url
-    os.environ["https_proxy"] = proxy_url
-
-# ============================================================
-# CLI argument parsing
-# ============================================================
-import argparse
-
-def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="A股自选股智能分析系统")
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--workers", type=int, default=None)
-    parser.add_argument("--no-context-snapshot", action="store_true")
-    return parser.parse_args()
-
-# ============================================================
-# Main entrypoint
-# ============================================================
-def main():
-    args = parse_arguments()
-
-    # Logging
-    setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir="logs")
-
-    logger = logging.getLogger(__name__)
-    logger.info("启动分析系统…")
-
-    # Fetch Danelfin comparative metrics (called once cleanly)
-    logger.info("正在获取 Danelfin AI 多因子评分...")
-    danelfin_results = fetch_danelfin_rankings(config.stock_list)
-    logger.info("Danelfin 评分获取完成: %s", danelfin_results)
-    
-    # Store results in config context so downstream report builders can embed them into PDFs
-    config.danelfin_rankings = danelfin_results
-
-    # Create pipeline
-    pipeline = StockAnalysisPipeline(
-        config=config,
-        max_workers=args.workers,
-        query_id=uuid.uuid4().hex,
-        query_source="cli",
-        save_context_snapshot=not args.no_context_snapshot,
-        daily_market_context_enabled=True,
-        daily_market_context_allow_generate=True,
+def render_pdf(markdown_content, output_filename, header_title):
+    html_body = markdown2.markdown(
+        markdown_content, 
+        extras=["tables", "fenced-code-blocks", "cjk-words", "break-on-newline"]
     )
+    full_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>{PDF_CSS}</style>
+    </head>
+    <body>
+        <h1>{header_title}</h1>
+        {html_body}
+    </body>
+    </html>
+    """
+    HTML(string=full_html).write_pdf(output_filename)
 
+# ==========================================
+# 3. Market Data & Comparison Matrix
+# ==========================================
+def fetch_market_data(tickers):
+    print("-> Fetching live market metrics...")
+    matrix_rows = []
+    current_snapshot = {}
+
+    for sym in tickers:
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="3mo")
+            info = ticker.info
+            
+            if hist.empty or len(hist) < 15:
+                continue
+            
+            price = hist['Close'].iloc[-1]
+            prev_price = hist['Close'].iloc[-2]
+            five_day_price = hist['Close'].iloc[-6] if len(hist) >= 6 else hist['Close'].iloc[0]
+            
+            ret_1d = ((price - prev_price) / prev_price) * 100
+            ret_5d = ((price - five_day_price) / five_day_price) * 100
+            
+            # RSI 14
+            delta = hist['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs)).iloc[-1]
+            
+            pe = info.get("forwardPE") or info.get("trailingPE") or "N/A"
+            pe_str = f"{pe:.1f}" if isinstance(pe, (int, float)) else "N/A"
+            
+            # Simple heuristic rating for current snapshot
+            if rsi > 60 and ret_5d > 0:
+                rating = "Strong Buy" if rsi < 75 else "Tactical Buy"
+                score = 8.5
+            elif rsi < 40:
+                rating = "Accumulate"
+                score = 7.0
+            else:
+                rating = "Hold"
+                score = 6.5
+
+            current_snapshot[sym] = {
+                "price": round(float(price), 2),
+                "rating": rating,
+                "score": score
+            }
+
+            matrix_rows.append({
+                "Ticker": sym,
+                "Price": f"${price:.2f}",
+                "1D %": f"{ret_1d:+.2f}%",
+                "5D %": f"{ret_5d:+.2f}%",
+                "RSI (14)": f"{rsi:.1f}",
+                "P/E": pe_str,
+                "Rating": rating,
+                "Score": f"{score:.1f}"
+            })
+        except Exception as e:
+            print(f"Error fetching {sym}: {e}")
+
+    return pd.DataFrame(matrix_rows), current_snapshot
+
+# ==========================================
+# 4. LLM Bilingual Executive Analysis
+# ==========================================
+def generate_bilingual_llm_reports(matrix_df):
+    print("-> Requesting LLM comparative analysis...")
+    if not OPENAI_API_KEY:
+        print("Warning: No API key found. Using fallback summary.")
+        return "### Watchlist Analysis\nActive market overview.", "### 自选股横向对比\n市场全景速览。"
+
+    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+    table_md = matrix_df.to_markdown(index=False)
+    
+    prompt = f"""
+Below is today's stock watchlist matrix:
+{table_md}
+
+Produce two sections separated exactly by `===DIVIDER===`:
+
+SECTION 1 (ENGLISH):
+### Multi-Stock Comparison & Relative Strength
+- **Top Momentum Leaders:** Identify top relative strength outperformers.
+- **Valuation / Momentum Divergence:** Note high-P/E or oversold setups.
+- **Risk & Alert Levels:** Note overbought (RSI > 70) or weak trend tickers.
+- **Tactical Allocation Verdict:** 1-sentence positioning summary.
+
+===DIVIDER===
+
+SECTION 2 (CHINESE 简体中文):
+### 自选股横向对比与强弱评级
+- **强势领涨标的:** 评估动量与相对强弱领先标的。
+- **估值与动量背离:** 提示高估值超买或超跌反弹潜力的个股。
+- **风险预警与超买超卖:** 标记 RSI > 70 或弱势跌破均线的标的。
+- **多资产配置策略建议:** 一句话投资组合配置与风控建议。
+"""
     try:
-        if args.dry_run:
-            success = pipeline.run(config.stock_list, dry_run=True)
-        else:
-            success = pipeline.run(config.stock_list)
-    except Exception as exc:
-        logger.error("分析失败: %s", exc)
-        exit(1)
+        res = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+        content = res.choices[0].message.content
+        parts = content.split("===DIVIDER===")
+        en_sec = parts[0].strip()
+        zh_sec = parts[1].strip() if len(parts) > 1 else ""
+        return en_sec, zh_sec
+    except Exception as e:
+        print(f"LLM API Error: {e}")
+        return "### Analysis\nFailed to fetch LLM response.", "### 分析\n未能获取大模型响应。"
 
-    if not success:
-        logger.error("分析失败")
-        exit(1)
+# ==========================================
+# 5. Main Pipeline Execution
+# ==========================================
+def main():
+    print("=== Starting Daily Stock Analysis Pipeline ===")
+    
+    # 1. Fetch live data & snapshot
+    matrix_df, current_snapshot = fetch_market_data(WATCHLIST)
+    matrix_md = matrix_df.to_markdown(index=False)
+    
+    # 2. Run signal verification & rolling backtest (from signal_verifier.py)
+    print("-> Running signal verification against historical predictions...")
+    en_eval_sec, zh_eval_sec = log_and_evaluate_accuracy(current_snapshot, lookback_days=3)
+    
+    # 3. Generate LLM cross-comparison analysis
+    en_llm_sec, zh_llm_sec = generate_bilingual_llm_reports(matrix_df)
+    
+    # 4. Assemble English Markdown Document
+    en_doc = f"""
+{en_eval_sec}
 
-    logger.info("分析完成")
-    exit(0)
+## Active Watchlist Comparison Matrix
+{matrix_md}
 
-# ============================================================
-# CLI entrypoint
-# ============================================================
+{en_llm_sec}
+"""
+
+    # 5. Assemble Chinese Markdown Document
+    zh_doc = f"""
+{zh_eval_sec}
+
+## 自选股横向对比与全景矩阵
+{matrix_md}
+
+{zh_llm_sec}
+"""
+
+    # 6. Render English & Chinese PDFs
+    print("-> Compiling PDF documents...")
+    render_pdf(en_doc, "Active_Watchlist_Analysis_EN.pdf", "Daily Stock Analysis Decision Dashboard")
+    render_pdf(zh_doc, "Active_Watchlist_Analysis_ZH.pdf", "每日股票自选横向对比与决策看板")
+    
+    print("=== Pipeline Complete! ===")
+    print("Outputs generated:")
+    print(" - Active_Watchlist_Analysis_EN.pdf")
+    print(" - Active_Watchlist_Analysis_ZH.pdf")
+
 if __name__ == "__main__":
     main()
