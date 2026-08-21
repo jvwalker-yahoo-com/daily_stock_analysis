@@ -1,4 +1,9 @@
 import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 import yfinance as yf
 import pandas as pd
 import markdown2
@@ -19,24 +24,28 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_AP
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.environ.get("OPENAI_MODEL", "gpt-4o")
 
+EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
+EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
+
 # ==========================================
-# 2. PDF Styling (Supports English & CJK)
+# 2. PDF Styling & Exporter (Bilingual CJK)
 # ==========================================
 PDF_CSS = """
 @page {
     size: A4;
-    margin: 16mm 12mm;
+    margin: 15mm 12mm;
     background-color: #ffffff;
 }
 body {
     font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
     color: #1e293b;
-    font-size: 9.5pt;
+    font-size: 9pt;
     line-height: 1.5;
 }
-h1 { color: #0f172a; font-size: 16pt; margin-bottom: 6px; border-bottom: 2px solid #0284c7; padding-bottom: 4px; }
-h2 { color: #0284c7; font-size: 12pt; margin-top: 14px; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 3px; }
-h3 { color: #334155; font-size: 10.5pt; margin-top: 10px; margin-bottom: 4px; }
+h1 { color: #0f172a; font-size: 15pt; margin-bottom: 6px; border-bottom: 2px solid #0284c7; padding-bottom: 4px; }
+h2 { color: #0284c7; font-size: 11.5pt; margin-top: 12px; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 3px; }
+h3 { color: #334155; font-size: 10pt; margin-top: 10px; margin-bottom: 4px; }
 table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 8.5pt; }
 th { background-color: #0f172a; color: #ffffff; padding: 6px 8px; text-align: left; font-weight: 600; }
 td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; }
@@ -100,7 +109,6 @@ def fetch_market_data(tickers):
             pe = info.get("forwardPE") or info.get("trailingPE") or "N/A"
             pe_str = f"{pe:.1f}" if isinstance(pe, (int, float)) else "N/A"
             
-            # Simple heuristic rating for current snapshot
             if rsi > 60 and ret_5d > 0:
                 rating = "Strong Buy" if rsi < 75 else "Tactical Buy"
                 score = 8.5
@@ -133,12 +141,12 @@ def fetch_market_data(tickers):
     return pd.DataFrame(matrix_rows), current_snapshot
 
 # ==========================================
-# 4. LLM Bilingual Executive Analysis
+# 4. LLM Cross-Comparison Generator
 # ==========================================
 def generate_bilingual_llm_reports(matrix_df):
     print("-> Requesting LLM comparative analysis...")
     if not OPENAI_API_KEY:
-        print("Warning: No API key found. Using fallback summary.")
+        print("Warning: No API key found. Using default markdown block.")
         return "### Watchlist Analysis\nActive market overview.", "### 自选股横向对比\n市场全景速览。"
 
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
@@ -182,7 +190,44 @@ SECTION 2 (CHINESE 简体中文):
         return "### Analysis\nFailed to fetch LLM response.", "### 分析\n未能获取大模型响应。"
 
 # ==========================================
-# 5. Main Pipeline Execution
+# 5. Email Dispatcher
+# ==========================================
+def send_report_email(pdf_files, recipient_email):
+    if not EMAIL_SENDER or not EMAIL_PASSWORD:
+        print("Skipping email dispatch: EMAIL_SENDER or EMAIL_PASSWORD not configured.")
+        return
+    if not recipient_email:
+        print("Skipping email dispatch: No recipient email specified.")
+        return
+
+    print(f"-> Sending email report to {recipient_email}...")
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_SENDER
+        msg['To'] = recipient_email
+        msg['Subject'] = "Daily Stock Watchlist Analysis & Rolling Verification Scorecard"
+
+        body = "Attached are today's English and Chinese stock analysis reports, featuring the comparison matrix and rolling prediction scorecard."
+        msg.attach(MIMEText(body, 'plain'))
+
+        for file_path in pdf_files:
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(file_path)}")
+                msg.attach(part)
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("-> Email successfully dispatched!")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+# ==========================================
+# 6. Main Pipeline Execution
 # ==========================================
 def main():
     print("=== Starting Daily Stock Analysis Pipeline ===")
@@ -191,7 +236,7 @@ def main():
     matrix_df, current_snapshot = fetch_market_data(WATCHLIST)
     matrix_md = matrix_df.to_markdown(index=False)
     
-    # 2. Run signal verification & rolling backtest (from signal_verifier.py)
+    # 2. Run signal verification & rolling backtest (3-day lookback)
     print("-> Running signal verification against historical predictions...")
     en_eval_sec, zh_eval_sec = log_and_evaluate_accuracy(current_snapshot, lookback_days=3)
     
@@ -219,14 +264,18 @@ def main():
 """
 
     # 6. Render English & Chinese PDFs
+    pdf_en = "Active_Watchlist_Analysis_EN.pdf"
+    pdf_zh = "Active_Watchlist_Analysis_ZH.pdf"
+    
     print("-> Compiling PDF documents...")
-    render_pdf(en_doc, "Active_Watchlist_Analysis_EN.pdf", "Daily Stock Analysis Decision Dashboard")
-    render_pdf(zh_doc, "Active_Watchlist_Analysis_ZH.pdf", "每日股票自选横向对比与决策看板")
+    render_pdf(en_doc, pdf_en, "Daily Stock Analysis Decision Dashboard")
+    render_pdf(zh_doc, pdf_zh, "每日股票自选横向对比与决策看板")
+    
+    # 7. Optional Email Dispatch
+    send_report_email([pdf_en, pdf_zh], EMAIL_RECIPIENT)
     
     print("=== Pipeline Complete! ===")
-    print("Outputs generated:")
-    print(" - Active_Watchlist_Analysis_EN.pdf")
-    print(" - Active_Watchlist_Analysis_ZH.pdf")
+    print(f"Generated: {pdf_en} and {pdf_zh}")
 
 if __name__ == "__main__":
     main()
