@@ -1,0 +1,43 @@
+{
+  "2026-08-19": {
+    "MARA": {"price": 19.20, "rating": "Hold", "score": 65},
+    "IREN": {"price": 9.10, "rating": "Buy", "score": 75},
+    "SOXL": {"price": 42.50, "rating": "Hold", "score": 60},
+    "TQQQ": {"price": 74.80, "rating": "Buy", "score": 70},
+    "MSFT": {"price": 452.00, "rating": "Strong Buy", "score": 85},
+    "META": {"price": 525.00, "rating": "Buy", "score": 80},
+    "APLD": {"price": 7.20, "rating": "Buy", "score": 70},
+    "SPY": {"price": 552.00, "rating": "Buy", "score": 75},
+    "QQQ": {"price": 482.00, "rating": "Buy", "score": 78},
+    "BULL": {"price": 28.50, "rating": "Hold", "score": 55},
+    "URA": {"price": 29.40, "rating": "Buy", "score": 80}
+  },
+  "2026-08-20": {
+    "MARA": {"price": 18.50, "rating": "Hold", "score": 6.5},
+    "IREN": {"price": 12.20, "rating": "Buy", "score": 8.0},
+    "SOXL": {"price": 45.00, "rating": "Buy", "score": 7.5},
+    "TQQQ": {"price": 72.00, "rating": "Buy", "score": 7.8},
+    "MSFT": {"price": 465.00, "rating": "Strong Buy", "score": 9.2},
+    "META": {"price": 510.00, "rating": "Buy", "score": 8.8},
+    "APLD": {"price": 6.80, "rating": "Buy", "score": 7.2},
+    "SPY": {"price": 545.00, "rating": "Hold", "score": 8.0},
+    "QQQ": {"price": 485.00, "rating": "Buy", "score": 8.5},
+    "BULL": {"price": 22.50, "rating": "Hold", "score": 6.0},
+    "URA": {"price": 31.00, "rating": "Buy", "score": 8.4}
+  },
+  "2026-08-21": {
+    "MARA": {"price": 18.50, "rating": "Hold", "score": 6.5},
+    "IREN": {"price": 11.20, "rating": "Buy", "score": 8.2},
+    "SOXL": {"price": 42.50, "rating": "Tactical Buy", "score": 7.0},
+    "TQQQ": {"price": 68.00, "rating": "Tactical Buy", "score": 7.5},
+    "MSFT": {"price": 445.00, "rating": "Strong Buy", "score": 9.2},
+    "META": {"price": 510.00, "rating": "Buy", "score": 8.8},
+    "APLD": {"price": 6.50, "rating": "Buy", "score": 7.5},
+    "SPY": {"price": 535.00, "rating": "Accumulate", "score": 8.0},
+    "QQQ": {"price": 465.00, "rating": "Accumulate", "score": 8.5},
+    "BULL": {"price": 24.50, "rating": "Hold", "score": 6.0},
+    "URA": {"price": 29.00, "rating": "Buy", "score": 8.7},
+    "HOOD": {"price": 21.00, "rating": "Buy", "score": 7.8},
+    "SOFI": {"price": 7.80, "rating": "Buy", "score": 8.0}
+  }
+}
