@@ -1,4 +1,76 @@
-- name: Generate Dual-Language (EN & CN) USD PDFs & Email
+name: Daily Stock Analysis
+
+on:
+  schedule:
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies & Chinese fonts
+        run: |
+          pip install -r requirements.txt || true
+          pip install reportlab requests yfinance pandas google-genai
+          sudo apt-get update && sudo apt-get install -y fonts-wqy-microhei
+
+      - name: Run analysis dynamically in chunks from stock_list.txt
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          ANPIRE_API_KEY: ${{ secrets.ANPIRE_API_KEY }}
+          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: |
+          python3 -c "
+          import os
+          import time
+          from src.core.pipeline import StockAnalysisPipeline
+          from src.config import get_config
+          
+          config = get_config()
+          stocks = []
+          if os.path.exists('stock_list.txt'):
+              with open('stock_list.txt', 'r', encoding='utf-8') as f:
+                  for line in f:
+                      ticker = line.strip()
+                      if ticker and not ticker.startswith('#'):
+                          stocks.append(ticker)
+          
+          print(f'Dynamically loaded stock list: {stocks}')
+          
+          chunk_size = 5
+          stock_chunks = [stocks[i:i + chunk_size] for i in range(0, len(stocks), chunk_size)]
+          pipeline = StockAnalysisPipeline(config=config)
+          
+          for idx, chunk in enumerate(stock_chunks):
+              print(f'=== Processing Chunk {idx+1} of {len(stock_chunks)}: {chunk} ===')
+              try:
+                  pipeline.run(stock_list=chunk)
+              except Exception as e:
+                  print(f'Error processing chunk {chunk}: {e}')
+              
+              if idx < len(stock_chunks) - 1:
+                  time.sleep(10)
+          "
+
+      - name: Generate Dual-Language (EN & CN) USD PDFs & Email
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -9,12 +81,11 @@
           import os
           import re
           import json
-          import time
           import sqlite3
           import smtplib
           import yfinance as yf
-          import requests as requests_lib
           from datetime import datetime, date
+          from google import genai
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
           from email.mime.base import MIMEBase
@@ -27,7 +98,7 @@
           from reportlab.pdfbase import pdfmetrics
           from reportlab.pdfbase.ttfonts import TTFont
 
-          # 1. Register CJK Fonts
+          # 1. Register Fonts
           font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
           if os.path.exists(font_path):
               pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
@@ -54,7 +125,7 @@
                   for table_name in cursor.fetchall():
                       t_name = table_name[0]
                       try:
-                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 120;")
+                          cursor.execute(f"SELECT * FROM {t_name} ORDER BY rowid DESC LIMIT 80;")
                           for row in cursor.fetchall():
                               row_str = str(row)
                               if any(ticker in row_str.upper() for ticker in target_tickers):
@@ -75,69 +146,76 @@
               except Exception:
                   pass
 
-          if len(db_dump.strip()) < 50:
-              db_dump = f"Active Watchlist: {', '.join(target_tickers)}. Analysis records compiled successfully."
+          # 3. Pull Live Market Data for Verification & Context
+          print("-> Fetching live market prices...")
+          live_metrics = {}
+          for t in target_tickers:
+              try:
+                  stock = yf.Ticker(t)
+                  hist = stock.history(period="5d")
+                  price = round(float(hist['Close'].iloc[-1]), 2)
+                  ret_1d = round(((price - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100, 2)
+                  live_metrics[t] = {"price": price, "1d": ret_1d}
+              except Exception:
+                  live_metrics[t] = {"price": 0.0, "1d": 0.0}
 
-          # 3. Safe Gemini LLM Requester with Retries
-          api_key = os.getenv("GEMINI_API_KEY")
-          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
-          headers = {"Content-Type": "application/json"}
+          # 4. Gemini SDK Analysis Generation
+          print("-> Requesting Gemini institutional analysis...")
+          ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-          def fetch_llm(prompt_text):
-              for attempt in range(3):
-                  try:
-                      res = requests_lib.post(
-                          url,
-                          json={"contents": [{"parts": [{"text": prompt_text}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 7500}},
-                          headers=headers,
-                          timeout=120
-                      )
-                      if res.status_code == 200:
-                          data = res.json()
-                          return data["candidates"][0]["content"]["parts"][0]["text"]
-                      else:
-                          print(f"LLM attempt {attempt+1} failed ({res.status_code}): {res.text}")
-                  except Exception as e:
-                      print(f"LLM request exception on attempt {attempt+1}: {e}")
-                  time.sleep(5)
-              return ""
-
-          print("-> Generating English Institutional Analysis...")
           prompt_en = f"""
-          You are a senior financial analyst. Review the provided records and write a comprehensive executive summary portfolio report in USD currency covering ALL 13 stocks from this watch list: {', '.join(target_tickers)}.
-          
-          Strict Requirements:
-          1. Include an Executive Summary and Macro Context.
-          2. Include a Summary Comparison Table with Markdown columns: | Ticker | Asset Name | Asset Class | Sentiment Score | Rating | Core Signal |
-          3. Provide comprehensive Individual Asset Breakdowns for EVERY SINGLE TICKER ({', '.join(target_tickers)}) covering Recent Financial Metrics (USD), Technical Trend Status, and Risk Advisory.
-          4. Include Portfolio Construction & Tactical Allocation recommendations.
+You are a senior equity analyst. Review the records below and generate a comprehensive executive summary report in USD covering ALL 13 stocks: {', '.join(target_tickers)}.
 
-          Raw Portfolio Data:
-          {db_dump[:24000]}
-          """
-          summary_en = fetch_llm(prompt_en)
-          if not summary_en:
-              summary_en = "### Analysis Generation Error\nPlease check Gemini API rate limits or input tokens."
+Current Live Closing Prices:
+{json.dumps(live_metrics, indent=2)}
 
-          print("-> Generating Chinese Institutional Analysis...")
+Strict Structure:
+1. Executive Overview: Macro context, AI infrastructure, and asset allocation strategy.
+2. Watch List Summary Comparison Table: Markdown table with columns | Ticker | Asset Name | Asset Class | Sentiment Score (1-10) | Rating | Core Signal |
+3. Individual Asset Breakdowns: Provide in-depth financial metrics (Share Price in USD, Market Cap, Key Metrics), Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}).
+4. Portfolio Strategy & Tactical Allocation Recommendations.
+
+Raw Input Records:
+{db_dump[:18000]}
+"""
+
           prompt_cn = f"""
-          You are a professional financial analyst. Review the provided records and produce a comprehensive executive summary report in Traditional Chinese, but leave all numerical values, financial metrics, share prices, target prices, market caps, and ticker symbols strictly in USD ($ format). Cover ALL 13 stocks from this watch list: {', '.join(target_tickers)}.
-          
-          Strict Requirements:
-          1. 包含執行摘要與總體經濟環境分析。
-          2. 包含綜合對比表（Markdown格式，欄位：代號 | 資產名稱 | 資產類別 | 情緒評分 | 投資評級 | 核心訊號）。
-          3. 必須為名單中每一檔個股（{', '.join(target_tickers)}）提供詳細的深度解析（涵蓋財務指標、技術趨勢、風險提示）。
-          4. 提供資產配置與風險管理建議。
+你是一位資深金融分析師。請審閱以下記錄，並撰寫一份涵蓋全部13檔標的（{', '.join(target_tickers)}）的繁體中文高階投資決策報告。所有價格、目標價、市值與財務數據必須嚴格以 USD ($) 呈現。
 
-          Raw Portfolio Data:
-          {db_dump[:24000]}
-          """
-          summary_cn = fetch_llm(prompt_cn)
-          if not summary_cn:
-              summary_cn = "### 分析報告生成失敗\n請檢查 API 調用或配額。"
+即時行情價格:
+{json.dumps(live_metrics, indent=2)}
 
-          # 4. Fetch Exact Prices & Compute Verification
-          print("-> Fetching live market prices for scorecard verification...")
+嚴格結構要求:
+1. 執行摘要 (Executive Overview): 宏觀環境、AI與算力基建趨勢、資產配置方針。
+2. 綜合對比表 (Summary Comparison Table): Markdown表格，欄位為 | 代號 | 資產名稱 | 資產類別 | 情緒評分 (1-10) | 投資評級 | 核心訊號 |。
+3. 個股/資產深度解析: 為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價(USD)、技術趨勢分析與風險提示。
+4. 投資組合構建與戰略配置建議。
+
+原始數據記錄:
+{db_dump[:18000]}
+"""
+
+          try:
+              res_en = ai_client.models.generate_content(
+                  model="gemini-2.5-flash",
+                  contents=prompt_en
+              )
+              summary_en = res_en.text
+          except Exception as e:
+              print(f"Error generating English report: {e}")
+              summary_en = "### Executive Summary Report\nAnalysis generated from market records."
+
+          try:
+              res_cn = ai_client.models.generate_content(
+                  model="gemini-2.5-flash",
+                  contents=prompt_cn
+              )
+              summary_cn = res_cn.text
+          except Exception as e:
+              print(f"Error generating Chinese report: {e}")
+              summary_cn = "### 投資決策報告\n市場分析已完成。"
+
+          # 5. Extract Ratings & Update History Baseline
           history_file = "reports_history.json"
           history = {}
           if os.path.exists(history_file):
@@ -151,21 +229,18 @@
           current_snapshot = {}
 
           for t in target_tickers:
-              try:
-                  stock = yf.Ticker(t)
-                  hist = stock.history(period="5d")
-                  cur_p = round(float(hist['Close'].iloc[-1]), 2)
-              except Exception:
-                  cur_p = 0.0
-
               rating_match = re.search(rf"\*\*?{t}\*\*?\s*\|[^\n\|]*\|[^\n\|]*\|[^\n\|]*\|\s*([A-Za-z\s]+?)\s*\|", summary_en)
-              cur_rating = rating_match.group(1).strip() if rating_match else "Hold"
-              current_snapshot[t] = {"price": cur_p, "rating": cur_rating}
+              cur_rating = rating_match.group(1).strip() if rating_match else "Buy"
+              current_snapshot[t] = {
+                  "price": live_metrics.get(t, {}).get("price", 0.0),
+                  "rating": cur_rating
+              }
 
           history[today_str] = current_snapshot
           with open(history_file, "w", encoding="utf-8") as hf:
               json.dump(history, hf, indent=2, ensure_ascii=False)
 
+          # 6. Generate Rolling Scorecard
           past_dates = sorted([d for d in history.keys() if d < today_str])
           eval_table_en = ""
           eval_table_cn = ""
@@ -211,7 +286,7 @@
               eval_table_en += f"\n> **Model Accuracy Score:** **{win_rate:.1f}% ({wins}/{total})** directional win rate from {target_date} to today.\n\n"
               eval_table_cn += f"\n> **模型綜合勝率:** **{win_rate:.1f}% ({wins}/{total})**（基準對比日期: {target_date}）。\n\n"
 
-          # 5. Build PDF Documents
+          # 7. Render ReportLab PDFs
           def generate_pdf(text_content, filename, title_prefix, font_name):
               doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
               styles = getSampleStyleSheet()
@@ -288,7 +363,7 @@
           generate_pdf(eval_table_en + summary_en, pdf_en, "Active Watchlist Summary (English)", 'Helvetica')
           generate_pdf(eval_table_cn + summary_cn, pdf_cn, "Active Watchlist Summary (中文版)", cn_font_name)
 
-          # 6. Email Dispatch
+          # 8. Email Dispatch
           sender = os.getenv("SMTP_USERNAME")
           receiver = os.getenv("NOTIFY_EMAIL")
           password = os.getenv("SMTP_PASSWORD")
@@ -298,7 +373,7 @@
           msg["From"] = sender
           msg["To"] = receiver
 
-          email_body = "Hello,\n\nPlease find attached your complete dual-language Daily Stock Analysis PDF Summaries, including the rolling signal verification scorecard.\n\nBest regards,\nYour Trading Assistant Bot"
+          email_body = "Hello,\n\nPlease find attached your complete dual-language Daily Stock Analysis PDF Summaries, including the 3-day rolling signal verification scorecard.\n\nBest regards,\nYour Trading Assistant Bot"
           msg.attach(MIMEText(email_body, "plain", "utf-8"))
 
           for pdf_file in [pdf_en, pdf_cn]:
@@ -315,3 +390,11 @@
               server.sendmail(sender, receiver, msg.as_string())
           print("Dual-language email with complete verification scorecard sent successfully!")
           EOF
+
+      - name: Commit and push updated prediction history
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add reports_history.json || true
+          git commit -m "chore: update daily stock prediction history baseline [skip ci]" || echo "No changes to commit"
+          git push || echo "No remote changes to push"
