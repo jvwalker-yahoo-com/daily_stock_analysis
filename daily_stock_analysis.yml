@@ -229,7 +229,7 @@ Raw Input Records:
               print(f"Error generating Chinese report: {e}")
               summary_cn = "### 投資決策報告\n市場分析已完成。"
 
-          # 5. Extract Ratings & Update Prediction History
+          # 5. Extract Ratings & Self-Heal Prediction History Baseline
           history_file = "reports_history.json"
           history = {}
           if os.path.exists(history_file):
@@ -243,7 +243,6 @@ Raw Input Records:
           current_snapshot = {}
 
           for t in target_tickers:
-              # Get accurate price
               cur_p = live_metrics.get(t, {}).get("price", 0.0)
               if cur_p == 0.0:
                   section_match = re.search(rf"(?:###|\b\d+\.\s*|\b){t}\b.*?(?=\n\d+\.|\n###|\Z)", summary_en, re.DOTALL | re.IGNORECASE)
@@ -253,10 +252,24 @@ Raw Input Records:
                       if p_match:
                           cur_p = float(p_match.group(1))
 
-              # Extract specific rating
               rating_match = re.search(rf"\*\*?{t}\*\*?\s*\|[^\n\|]*\|[^\n\|]*\|[^\n\|]*\|\s*([A-Za-z\s]+?)\s*\|", summary_en)
               cur_rating = rating_match.group(1).strip() if rating_match else "Hold"
               current_snapshot[t] = {"price": cur_p, "rating": cur_rating}
+
+          # Self-healing logic for past dates corrupted with identical prices (e.g., 18.50)
+          for p_date, records in list(history.items()):
+              if p_date < today_str:
+                  price_values = [v.get("price", 0.0) for v in records.values() if isinstance(v, dict)]
+                  # If all recorded prices are identical (and > 3 stocks), it was corrupted
+                  if len(price_values) > 3 and len(set(price_values)) == 1:
+                      print(f"-> Sanitizing corrupted baseline for date {p_date}...")
+                      for sym in records.keys():
+                          try:
+                              hist_close = yf.Ticker(sym).history(period="1mo")['Close']
+                              if not hist_close.empty:
+                                  records[sym]["price"] = round(float(hist_close.iloc[-3]), 2)
+                          except Exception:
+                              pass
 
           history[today_str] = current_snapshot
           with open(history_file, "w", encoding="utf-8") as hf:
