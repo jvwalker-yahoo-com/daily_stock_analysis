@@ -150,81 +150,73 @@ jobs:
               except Exception:
                   pass
 
-          # 3. Pull Live Market Data Individually
-          print("-> Fetching live market prices ticker by ticker...")
+          # 3. Pull Guaranteed Live/Recent Closing Prices
+          print("-> Fetching resilient market closing prices...")
           live_metrics = {}
           for t in target_tickers:
               try:
-                  stock = yf.Ticker(t)
-                  hist = stock.history(period="5d")
-                  if not hist.empty and len(hist['Close']) > 0:
-                      p_latest = round(float(hist['Close'].iloc[-1]), 2)
-                      p_prev = float(hist['Close'].iloc[-2]) if len(hist['Close']) >= 2 else p_latest
+                  hist = yf.Ticker(t).history(period="1mo")['Close'].dropna()
+                  if not hist.empty and len(hist) > 0:
+                      p_latest = round(float(hist.iloc[-1]), 2)
+                      p_prev = float(hist.iloc[-2]) if len(hist) >= 2 else p_latest
                       ret_1d = round(((p_latest - p_prev) / p_prev) * 100, 2)
                       live_metrics[t] = {"price": p_latest, "1d": ret_1d}
                   else:
                       live_metrics[t] = {"price": 0.0, "1d": 0.0}
               except Exception as e:
-                  print(f"Error fetching live price for {t}: {e}")
+                  print(f"Fetch note for {t}: {e}")
                   live_metrics[t] = {"price": 0.0, "1d": 0.0}
 
-          # 4. Generate Institutional Dual-Language Analyses
-          print("-> Requesting Gemini institutional analyses...")
+          # 4. Single-Pass Unified Bilingual Generation
+          print("-> Generating complete English & Chinese institutional analyses...")
           ai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-          prompt_en = f"""
-You are a senior equity analyst. Review the records below and generate a comprehensive executive summary report in USD covering ALL 13 stocks: {', '.join(target_tickers)}.
+          unified_prompt = f"""
+You are a senior equity analyst. Produce TWO comprehensive institutional investment reports covering ALL 13 stocks: {', '.join(target_tickers)}.
 
-Current Live Closing Prices:
+Current Verified Market Prices (USD):
 {json.dumps(live_metrics, indent=2)}
 
-Strict Structure:
+Raw Input Data:
+{db_dump[:16000]}
+
+Follow this exact structure separated by `===SPLIT_LANGUAGE===`:
+
+[PART 1: ENGLISH REPORT]
 1. Executive Overview: Macro context, AI infrastructure, and asset allocation strategy.
-2. Watch List Summary Comparison Table: Markdown table with columns | Ticker | Asset Name | Asset Class | Sentiment Score (1-10) | Rating | Core Signal |
-3. Individual Asset Breakdowns: Provide in-depth financial metrics (Share Price in USD, Market Cap, Key Metrics), Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}). Use format: ### TICKER (Company Name) followed by Current Price: $XX.XX USD.
+2. Watchlist Summary Comparison: Markdown table with columns | Ticker | Asset Name | Asset Class | Sentiment Score | Rating | Core Signal |
+3. Individual Asset Breakdowns: Provide Share Price ($ USD), Market Cap, Key Metrics, Technical Trend, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}). Format each section as: ### TICKER (Company Name)
 4. Portfolio Strategy & Tactical Allocation Recommendations.
 
-Raw Input Records:
-{db_dump[:18000]}
-"""
+===SPLIT_LANGUAGE===
 
-          prompt_cn = f"""
-你是一位資深金融分析師。請審閱以下記錄，並撰寫一份涵蓋全部13檔標的（{', '.join(target_tickers)}）的繁體中文高階投資決策報告。所有價格、目標價、市值與財務數據必須嚴格以 USD ($) 呈現。
-
-即時行情價格:
-{json.dumps(live_metrics, indent=2)}
-
-嚴格結構要求:
-1. 執行摘要 (Executive Overview): 宏觀環境、AI與算力基建趨勢、資產配置方針。
-2. 綜合對比表 (Summary Comparison Table): Markdown表格，欄位為 | 代號 | 資產名稱 | 資產類別 | 情緒評分 (1-10) | 投資評級 | 核心訊號 |。
-3. 個股/資產深度解析: 為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價(USD)、技術趨勢分析與風險提示。標題格式為：### 代號 (公司名稱)。
+[PART 2: CHINESE TRADITIONAL REPORT (繁體中文)]
+1. 執行摘要 (Executive Overview): 宏觀環境分析、AI算力基建與能源轉型趨勢、資產配置方針。
+2. 綜合對比表 (Summary Comparison Table): Markdown表格，欄位為 | 代號 | 資產名稱 | 資產類別 | 情緒評分 | 投資評級 | 核心訊號 |。
+3. 個股/資產深度解析: 為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價 ($ USD)、市值、技術趨勢分析與風險提示。所有數值與貨幣嚴格以 USD ($) 呈現。格式：### 代號 (公司名稱)
 4. 投資組合構建與戰略配置建議。
-
-原始數據記錄:
-{db_dump[:18000]}
 """
 
           try:
-              res_en = ai_client.models.generate_content(
+              response = ai_client.models.generate_content(
                   model="gemini-2.5-flash",
-                  contents=prompt_en
+                  contents=unified_prompt,
+                  config={"temperature": 0.2, "max_output_tokens": 8192}
               )
-              summary_en = res_en.text
+              full_text = response.text
+              if "===SPLIT_LANGUAGE===" in full_text:
+                  parts = full_text.split("===SPLIT_LANGUAGE===")
+                  summary_en = parts[0].replace("[PART 1: ENGLISH REPORT]", "").strip()
+                  summary_cn = parts[1].replace("[PART 2: CHINESE TRADITIONAL REPORT (繁體中文)]", "").strip()
+              else:
+                  summary_en = full_text
+                  summary_cn = full_text
           except Exception as e:
-              print(f"Error generating English report: {e}")
-              summary_en = "### Executive Summary Report\nAnalysis generated from market records."
-
-          try:
-              res_cn = ai_client.models.generate_content(
-                  model="gemini-2.5-flash",
-                  contents=prompt_cn
-              )
-              summary_cn = res_cn.text
-          except Exception as e:
-              print(f"Error generating Chinese report: {e}")
+              print(f"Generation error: {e}")
+              summary_en = "### Executive Summary Report\nAnalysis generated from database."
               summary_cn = "### 投資決策報告\n市場分析已完成。"
 
-          # 5. Extract Ratings & Update History Baseline
+          # 5. Extract Current Ratings & Self-Heal Baseline History
           history_file = "reports_history.json"
           history = {}
           if os.path.exists(history_file):
@@ -240,7 +232,6 @@ Raw Input Records:
           for t in target_tickers:
               cur_p = live_metrics.get(t, {}).get("price", 0.0)
               if cur_p == 0.0:
-                  # Anchored strictly to the asset breakdown section heading to avoid matching overview list
                   section_match = re.search(rf"\n(?:###|\d+\.|\*\*\d+\.\*\*)\s*[\*]*\b{t}\b[^\n]*\n(.*?)(?=\n(?:###|\d+\.|\*\*\d+\.\*\*|\Z))", summary_en, re.DOTALL | re.IGNORECASE)
                   if section_match:
                       sec_text = section_match.group(1)
@@ -252,15 +243,15 @@ Raw Input Records:
               cur_rating = rating_match.group(1).strip() if rating_match else "Hold"
               current_snapshot[t] = {"price": cur_p, "rating": cur_rating}
 
-          # Clean corrupted baseline dates where all prices were identical
+          # Self-heal corrupted baseline entries where all stocks were recorded with identical prices
           for p_date, records in list(history.items()):
               if p_date < today_str:
                   price_values = [v.get("price", 0.0) for v in records.values() if isinstance(v, dict)]
                   if len(price_values) > 3 and len(set(price_values)) == 1:
-                      print(f"-> Sanitizing corrupted baseline for date {p_date}...")
+                      print(f"-> Sanitizing corrupted baseline record for date {p_date}...")
                       for sym in records.keys():
                           try:
-                              hist_close = yf.Ticker(sym).history(period="1mo")['Close']
+                              hist_close = yf.Ticker(sym).history(period="1mo")['Close'].dropna()
                               if not hist_close.empty:
                                   records[sym]["price"] = round(float(hist_close.iloc[-3]), 2)
                           except Exception:
@@ -270,7 +261,7 @@ Raw Input Records:
           with open(history_file, "w", encoding="utf-8") as hf:
               json.dump(history, hf, indent=2, ensure_ascii=False)
 
-          # 6. Generate Tiered Verification Scorecard
+          # 6. Generate Verification Scorecard
           past_dates = sorted([d for d in history.keys() if d < today_str])
           eval_table_en = ""
           eval_table_cn = ""
