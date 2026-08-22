@@ -150,27 +150,22 @@ jobs:
               except Exception:
                   pass
 
-          # 3. Batch Fetch Precise Live Prices
-          print("-> Fetching live market prices in single batch...")
+          # 3. Pull Live Market Data Individually
+          print("-> Fetching live market prices ticker by ticker...")
           live_metrics = {}
-          tickers_query = " ".join(target_tickers)
-          try:
-              download_df = yf.download(tickers_query, period="5d", interval="1d", group_by='ticker', progress=False)
-              for t in target_tickers:
-                  try:
-                      if len(target_tickers) == 1:
-                          sub_df = download_df['Close'].dropna()
-                      else:
-                          sub_df = download_df[t]['Close'].dropna()
-                      p_latest = round(float(sub_df.iloc[-1]), 2)
-                      p_prev = float(sub_df.iloc[-2]) if len(sub_df) >= 2 else p_latest
+          for t in target_tickers:
+              try:
+                  stock = yf.Ticker(t)
+                  hist = stock.history(period="5d")
+                  if not hist.empty and len(hist['Close']) > 0:
+                      p_latest = round(float(hist['Close'].iloc[-1]), 2)
+                      p_prev = float(hist['Close'].iloc[-2]) if len(hist['Close']) >= 2 else p_latest
                       ret_1d = round(((p_latest - p_prev) / p_prev) * 100, 2)
                       live_metrics[t] = {"price": p_latest, "1d": ret_1d}
-                  except Exception:
+                  else:
                       live_metrics[t] = {"price": 0.0, "1d": 0.0}
-          except Exception as e:
-              print(f"Batch market data fetch warning: {e}")
-              for t in target_tickers:
+              except Exception as e:
+                  print(f"Error fetching live price for {t}: {e}")
                   live_metrics[t] = {"price": 0.0, "1d": 0.0}
 
           # 4. Generate Institutional Dual-Language Analyses
@@ -186,7 +181,7 @@ Current Live Closing Prices:
 Strict Structure:
 1. Executive Overview: Macro context, AI infrastructure, and asset allocation strategy.
 2. Watch List Summary Comparison Table: Markdown table with columns | Ticker | Asset Name | Asset Class | Sentiment Score (1-10) | Rating | Core Signal |
-3. Individual Asset Breakdowns: Provide in-depth financial metrics (Share Price in USD, Market Cap, Key Metrics), Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}).
+3. Individual Asset Breakdowns: Provide in-depth financial metrics (Share Price in USD, Market Cap, Key Metrics), Technical Trend Status, and Risk Advisory for EVERY single ticker ({', '.join(target_tickers)}). Use format: ### TICKER (Company Name) followed by Current Price: $XX.XX USD.
 4. Portfolio Strategy & Tactical Allocation Recommendations.
 
 Raw Input Records:
@@ -202,7 +197,7 @@ Raw Input Records:
 嚴格結構要求:
 1. 執行摘要 (Executive Overview): 宏觀環境、AI與算力基建趨勢、資產配置方針。
 2. 綜合對比表 (Summary Comparison Table): Markdown表格，欄位為 | 代號 | 資產名稱 | 資產類別 | 情緒評分 (1-10) | 投資評級 | 核心訊號 |。
-3. 個股/資產深度解析: 為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價(USD)、技術趨勢分析與風險提示。
+3. 個股/資產深度解析: 為名單中每一檔標的（{', '.join(target_tickers)}）提供詳細現價(USD)、技術趨勢分析與風險提示。標題格式為：### 代號 (公司名稱)。
 4. 投資組合構建與戰略配置建議。
 
 原始數據記錄:
@@ -229,7 +224,7 @@ Raw Input Records:
               print(f"Error generating Chinese report: {e}")
               summary_cn = "### 投資決策報告\n市場分析已完成。"
 
-          # 5. Extract Ratings & Self-Heal Prediction History Baseline
+          # 5. Extract Ratings & Update History Baseline
           history_file = "reports_history.json"
           history = {}
           if os.path.exists(history_file):
@@ -245,9 +240,10 @@ Raw Input Records:
           for t in target_tickers:
               cur_p = live_metrics.get(t, {}).get("price", 0.0)
               if cur_p == 0.0:
-                  section_match = re.search(rf"(?:###|\b\d+\.\s*|\b){t}\b.*?(?=\n\d+\.|\n###|\Z)", summary_en, re.DOTALL | re.IGNORECASE)
+                  # Anchored strictly to the asset breakdown section heading to avoid matching overview list
+                  section_match = re.search(rf"\n(?:###|\d+\.|\*\*\d+\.\*\*)\s*[\*]*\b{t}\b[^\n]*\n(.*?)(?=\n(?:###|\d+\.|\*\*\d+\.\*\*|\Z))", summary_en, re.DOTALL | re.IGNORECASE)
                   if section_match:
-                      sec_text = section_match.group(0)
+                      sec_text = section_match.group(1)
                       p_match = re.search(r'(?:Price|Share Price|Current Price)[^\$\n]*\$\s*([\d\.]+)', sec_text, re.IGNORECASE)
                       if p_match:
                           cur_p = float(p_match.group(1))
@@ -256,11 +252,10 @@ Raw Input Records:
               cur_rating = rating_match.group(1).strip() if rating_match else "Hold"
               current_snapshot[t] = {"price": cur_p, "rating": cur_rating}
 
-          # Self-healing logic for past dates corrupted with identical prices (e.g., 18.50)
+          # Clean corrupted baseline dates where all prices were identical
           for p_date, records in list(history.items()):
               if p_date < today_str:
                   price_values = [v.get("price", 0.0) for v in records.values() if isinstance(v, dict)]
-                  # If all recorded prices are identical (and > 3 stocks), it was corrupted
                   if len(price_values) > 3 and len(set(price_values)) == 1:
                       print(f"-> Sanitizing corrupted baseline for date {p_date}...")
                       for sym in records.keys():
@@ -286,11 +281,11 @@ Raw Input Records:
               
               eval_table_en = f"## 3-Day Rolling Signal Verification & Accuracy\n"
               eval_table_en += f"### Tracking Window: {target_date} &rarr; {today_str} (With ±1.5% Buffer for Core Anchors)\n\n"
-              eval_table_en += f"| Ticker | Tier | Signal Date | Past Signal | Base Price | Current Price | Return % | Outcome |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+              eval_table_en += f"| Ticker | Signal Date | Past Signal | Base Price | Current Price | Return % | Outcome |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
               
               eval_table_cn = f"## 歷史預測回測與信號勝率驗證 (3日週期)\n"
               eval_table_cn += f"### 追蹤時間窗口: {target_date} &rarr; {today_str} (核心底倉含 ±1.5% 緩衝區)\n\n"
-              eval_table_cn += f"| 代號 | 分類 | 信號日期 | 前期信號 | 基準價格 | 當前價格 | 實際變動 | 評定結果 |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+              eval_table_cn += f"| 代號 | 信號日期 | 前期信號 | 基準價格 | 當前價格 | 實際變動 | 評定結果 |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
               
               wins, total = 0, 0
               for sym, past in past_records.items():
@@ -300,8 +295,6 @@ Raw Input Records:
                       chg = ((p_now - p_old) / p_old) * 100
                       rating = past.get("rating", "Hold")
                       is_core = sym in CORE_ANCHORS
-                      tier_en = "Core" if is_core else "Tactical"
-                      tier_cn = "核心" if is_core else "戰術"
 
                       is_bull = any(w in rating.lower() for w in ["buy", "accumulate", "bull"])
                       is_bear = any(w in rating.lower() for w in ["sell", "reduce", "bear"])
@@ -329,8 +322,8 @@ Raw Input Records:
                       if is_win: wins += 1
                       total += 1
 
-                      eval_table_en += f"| **{sym}** | {tier_en} | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_en} |\n"
-                      eval_table_cn += f"| **{sym}** | {tier_cn} | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_cn} |\n"
+                      eval_table_en += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_en} |\n"
+                      eval_table_cn += f"| **{sym}** | {target_date} | {rating} | ${p_old:.2f} | ${p_now:.2f} | {chg:+.2f}% | {res_cn} |\n"
 
               win_rate = (wins / total * 100) if total > 0 else 0
               eval_table_en += f"\n> **Model Accuracy Score:** **{win_rate:.1f}% ({wins}/{total})** directional consistency from {target_date} to today.\n\n"
@@ -368,7 +361,7 @@ Raw Input Records:
                       continue
                   elif table_data and "|" not in l_clean:
                       num_cols = len(table_data[0])
-                      col_widths = [45, 45, 55, 55, 55, 55, 50, 60] if num_cols == 8 else [55, 110, 90, 70, 75, 139][:num_cols]
+                      col_widths = [55, 75, 75, 65, 65, 65, 70] if num_cols == 7 else [55, 110, 90, 70, 75, 139][:num_cols]
                       t = Table(table_data, colWidths=col_widths)
                       t.setStyle(TableStyle([
                           ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
@@ -392,7 +385,7 @@ Raw Input Records:
 
               if table_data:
                   num_cols = len(table_data[0])
-                  col_widths = [45, 45, 55, 55, 55, 55, 50, 60] if num_cols == 8 else [55, 110, 90, 70, 75, 139][:num_cols]
+                  col_widths = [55, 75, 75, 65, 65, 65, 70] if num_cols == 7 else [55, 110, 90, 70, 75, 139][:num_cols]
                   t = Table(table_data, colWidths=col_widths)
                   t.setStyle(TableStyle([
                       ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
