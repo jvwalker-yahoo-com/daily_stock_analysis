@@ -10,7 +10,7 @@ services:
       - key: WEBUI_HOST
         value: 0.0.0.0
       - key: FINNHUB_API_KEY
-        value: "da02ec1r01qgk75qq5v0da02ec1r01qgk75qq5vg"
+        value: "db402p9r01qucqgihnrgdb402p9r01qucqgihns0"
       - key: TWELVE_DATA_API_KEY
         value: "fa5122e69e6346359095fec0581fb72d"
       - key: FMP_API_KEY
