@@ -375,7 +375,9 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # 注册路由
     # ============================================================
     
+    from api.v1.endpoints.flow import router as flow_router
     app.include_router(api_v1_router, prefix="/api/v1")
+    app.include_router(flow_router, prefix="/api/flow", tags=["Flow"])
     add_error_handlers(app)
     
     # ============================================================

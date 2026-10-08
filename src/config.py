@@ -1478,7 +1478,7 @@ class Config:
         # OpenAI-compatible LLM gateway.  When no other OpenAI-compatible key is
         # configured, use ANSPIRE_API_KEYS as the legacy openai-compatible
         # provider so "one key" setups work without LLM_CHANNELS.
-        anspire_keys_str = os.getenv('ANSPIRE_API_KEYS', '')
+        anspire_keys_str = os.getenv('ANSPIRE_API_KEYS') or os.getenv('ANSPIRE_API_KEY') or os.getenv('ANPIRE_API_KEY') or ''
         anspire_api_keys = [k.strip() for k in anspire_keys_str.split(',') if k.strip()]
         anspire_llm_enabled = parse_env_bool(os.getenv('ANSPIRE_LLM_ENABLED'), default=True)
         anspire_llm_base_url = (
@@ -1689,10 +1689,10 @@ class Config:
         minimax_keys_str = os.getenv('MINIMAX_API_KEYS', '')
         minimax_api_keys = [k.strip() for k in minimax_keys_str.split(',') if k.strip()]
         
-        tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')
+        tavily_keys_str = os.getenv('TAVILY_API_KEYS') or os.getenv('TAVILY_API_KEY') or ''
         tavily_api_keys = [k.strip() for k in tavily_keys_str.split(',') if k.strip()]
         
-        serpapi_keys_str = os.getenv('SERPAPI_API_KEYS', '')
+        serpapi_keys_str = os.getenv('SERPAPI_API_KEYS') or os.getenv('SERPAPI_API_KEY') or ''
         serpapi_keys = [k.strip() for k in serpapi_keys_str.split(',') if k.strip()]
 
         brave_keys_str = os.getenv('BRAVE_API_KEYS', '')
@@ -1795,7 +1795,7 @@ class Config:
             tickflow_batch_daily_enabled=parse_env_bool(os.getenv('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
             tickflow_batch_size=parse_env_int(os.getenv('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,
-            alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or None,
+            alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or os.getenv('ALPHA_VANTAGE_API_KEY') or None,
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
             longbridge_app_secret=os.getenv('LONGBRIDGE_APP_SECRET') or None,
             longbridge_access_token=os.getenv('LONGBRIDGE_ACCESS_TOKEN') or None,
@@ -2396,7 +2396,7 @@ class Config:
                 if single_key:
                     api_keys = [single_key]
             if not api_keys and ch_lower == "anspire":
-                anspire_keys_raw = os.getenv('ANSPIRE_API_KEYS', '')
+                anspire_keys_raw = os.getenv('ANSPIRE_API_KEYS') or os.getenv('ANSPIRE_API_KEY') or os.getenv('ANPIRE_API_KEY') or ''
                 api_keys = [k.strip() for k in anspire_keys_raw.split(',') if k.strip()]
 
             # Models

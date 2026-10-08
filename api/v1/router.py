@@ -20,6 +20,7 @@ from api.v1.endpoints import (
     backtest,
     decision_signals,
     health,
+    flow,
     history,
     intelligence,
     portfolio,
@@ -108,6 +109,12 @@ router.include_router(
     intelligence.router,
     prefix="/intelligence",
     tags=["Intelligence"]
+)
+
+router.include_router(
+    flow.router,
+    prefix="/flow",
+    tags=["Flow"]
 )
 
 router.include_router(

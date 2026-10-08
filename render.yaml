@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: daily-stock-analysis
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn server:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: WEBUI_HOST
+        value: 0.0.0.0
+      - key: FINNHUB_API_KEY
+        value: "da02ec1r01qgk75qq5v0da02ec1r01qgk75qq5vg"
+      - key: TWELVE_DATA_API_KEY
+        value: "fa5122e69e6346359095fec0581fb72d"
+      - key: FMP_API_KEY
+        value: "i2dkmxpEVNF4X5pln0XwwNk0wfwtf9oN"
+      - key: ALPHA_VANTAGE_API_KEY
+        value: "P3I4HA7S9JQHFL8X"
+      - key: ALPHAVANTAGE_API_KEY
+        value: "P3I4HA7S9JQHFL8X"
+      - key: TAVILY_API_KEYS
+        value: "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"
+      - key: TAVILY_API_KEY
+        value: "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"
+      - key: SERPAPI_API_KEYS
+        value: "572f3ee5596cb17ee970fd360dfc8a36e8b8cba99c27b88d6362db83f76b30db"
+      - key: SERPAPI_API_KEY
+        value: "572f3ee5596cb17ee970fd360dfc8a36e8b8cba99c27b88d6362db83f76b30db"
+      - key: ANSPIRE_API_KEYS
+        value: "PrR9nw3YnOMTdmjk3uvA0yLOvoBuEAoD"
+      - key: ANPIRE_API_KEY
+        value: "PrR9nw3YnOMTdmjk3uvA0yLOvoBuEAoD"
+      - key: STOCK_LIST
+        value: "AAPL,NVDA,MSFT,TSLA,META,AMZN,GOOGL"
