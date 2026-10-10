@@ -27,6 +27,7 @@ from api.v1.endpoints import (
     stocks,
     system_config,
     usage,
+    market_intel,
 )
 
 # 创建 v1 版本主路由。
@@ -115,6 +116,12 @@ router.include_router(
     flow.router,
     prefix="/flow",
     tags=["Flow"]
+)
+
+router.include_router(
+    market_intel.router,
+    prefix="/market-intel",
+    tags=["MarketIntel"]
 )
 
 router.include_router(
